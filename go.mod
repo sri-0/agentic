@@ -6,6 +6,8 @@ require (
 	github.com/achetronic/adk-utils-go v0.2.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
+	github.com/joho/godotenv v1.5.1
+	github.com/openai/openai-go/v3 v3.16.0
 	github.com/rs/zerolog v1.33.0
 	github.com/sethvargo/go-envconfig v1.1.0
 	google.golang.org/adk v0.5.0
@@ -29,7 +31,6 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.19 // indirect
-	github.com/openai/openai-go/v3 v3.16.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
