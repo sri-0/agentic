@@ -10,13 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"agentic/agents/basic"
 	"agentic/agents/deepresearch"
 	"agentic/agents/triage"
 	"agentic/internal/agent"
 	"agentic/internal/config"
 	"agentic/internal/rag"
 	"agentic/internal/server"
-	"agentic/internal/tools"
 
 	adkagent "google.golang.org/adk/agent"
 
@@ -24,20 +24,25 @@ import (
 	"github.com/rs/zerolog"
 )
 
+type agentBuilder func(*config.Config, *config.AgentConfig, *rag.Client) (adkagent.Agent, error)
+
+var builders = map[string]agentBuilder{
+	"basic":         basic.NewAgent,
+	"deep-research": deepresearch.NewAgent,
+	"triage":        triage.NewAgent,
+}
+
 func main() {
 	ctx := context.Background()
 
-	// Load .env file if present
 	_ = godotenv.Load()
 
-	// Load configuration
 	cfg, err := config.Load(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Init logger
 	var logger zerolog.Logger
 	if cfg.LogJSON {
 		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
@@ -51,7 +56,6 @@ func main() {
 		logger = logger.Level(level)
 	}
 
-	// Load YAML configs from CONFIG_DIR
 	configDir := cfg.ConfigDir
 	logger.Info().Str("config_dir", configDir).Msg("loading config files")
 
@@ -72,67 +76,55 @@ func main() {
 	cfg.Agents = agentsCfg
 	logger.Info().Strs("agents", agentsCfg.AgentIDs()).Msg("agents config loaded")
 
-	// Build all agents into registry
 	ragClient := rag.NewClient()
 	registry := agent.NewRegistry()
 
 	for i := range agentsCfg.Agents {
 		agentCfg := &agentsCfg.Agents[i]
+		agentType := agentCfg.Type
+		if agentType == "" {
+			agentType = "basic"
+		}
 
-		var core *agent.Core
+		build, ok := builders[agentType]
+		if !ok {
+			logger.Error().Str("agent", agentCfg.ID).Str("type", agentType).Msg("unknown agent type, skipping")
+			continue
+		}
 
-		if len(agentCfg.SubAgents) > 0 {
-			var rootAgent adkagent.Agent
-			var buildErr error
+		rootAgent, buildErr := build(cfg, agentCfg, ragClient)
+		if buildErr != nil {
+			logger.Error().Err(buildErr).Str("agent", agentCfg.ID).Msg("failed to build agent, skipping")
+			continue
+		}
 
-			switch agentCfg.ID {
-			case "triage-agent":
-				rootAgent, buildErr = triage.NewAgent(cfg, agentCfg, ragClient)
-			default:
-				// deep-research and any other hierarchical agents
-				rootAgent, buildErr = deepresearch.NewAgent(cfg, agentCfg, ragClient)
-			}
-
-			if buildErr != nil {
-				logger.Fatal().Err(buildErr).Str("agent", agentCfg.ID).Msg("failed to create hierarchical agent")
-			}
-
-			core, err = agent.NewCoreWithAgent(cfg, agentCfg, rootAgent, logger)
-			if err != nil {
-				logger.Fatal().Err(err).Str("agent", agentCfg.ID).Msg("failed to create agent core")
-			}
-			logger.Info().Str("agent", agentCfg.ID).Int("sub_agents", len(agentCfg.SubAgents)).Msg("hierarchical agent loaded")
-		} else {
-			allTools, toolErr := tools.NewAllTools()
-			if toolErr != nil {
-				logger.Fatal().Err(toolErr).Str("agent", agentCfg.ID).Msg("failed to create tools")
-			}
-			core, err = agent.NewCore(cfg, agentCfg, allTools, logger)
-			if err != nil {
-				logger.Fatal().Err(err).Str("agent", agentCfg.ID).Msg("failed to create agent core")
-			}
-			logger.Info().Str("agent", agentCfg.ID).Strs("tools", tools.ToolNames()).Msg("flat agent loaded")
+		core, coreErr := agent.NewCoreWithAgent(cfg, agentCfg, rootAgent, logger)
+		if coreErr != nil {
+			logger.Error().Err(coreErr).Str("agent", agentCfg.ID).Msg("failed to create agent core, skipping")
+			continue
 		}
 
 		registry.Register(agentCfg.ID, core)
+		logger.Info().Str("agent", agentCfg.ID).Str("type", agentType).Msg("agent loaded")
+	}
+
+	if len(registry.IDs()) == 0 {
+		logger.Fatal().Msg("no agents loaded successfully")
 	}
 
 	logger.Info().Strs("agents", registry.IDs()).Msg("agent registry ready")
 
-	// Build router
 	router := server.NewRouter(registry, cfg, logger)
 
-	// Start server
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      router,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 5 * time.Minute, // long timeout for SSE streams
+		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

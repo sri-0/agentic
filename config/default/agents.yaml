@@ -1,6 +1,7 @@
 agents:
-  - id: test-agent
-    name: agentic
+  - id: basic-agent
+    type: basic
+    name: basic_agent
     description: AI assistant with database, search, and calculation tools
     model: openai/gpt-4o-mini
     provider: openrouter
@@ -23,68 +24,146 @@ agents:
       - calculate
 
   - id: deep-research
-    name: deep_research_orchestrator
+    type: deep-research
+    name: deep_research_pipeline
     description: Deep research agent with document analysis and citation
     model: openai/gpt-4o
     provider: openrouter
-    system_prompt: |
-      You are a deep research orchestrator. Your workflow:
-      1. Use opensearch_retrieve to find relevant documents
-      2. Transfer to analyst_agent for document analysis
-      3. Use generate_report to produce the final cited report
-
-      Always cite sources using document metadata. Every claim must reference its source.
-    tools:
-      - opensearch_retrieve
-      - opensearch_retrieve_by_id
-      - query_research_db
-      - query_metrics_db
-      - generate_report
     sub_agents:
-      - name: analyst_agent
+      - name: rag_retrieval_agent
+        description: Retrieves relevant documents from OpenSearch
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: retrieved_documents
+        system_prompt: |
+          You are a document retrieval specialist. Given the user's research query, use opensearch_retrieve to find relevant documents. Try multiple search variations to maximize coverage. Return all retrieved documents with their metadata.
+
+          Retrieved documents: {retrieved_documents}
+        tools:
+          - opensearch_retrieve
+          - opensearch_retrieve_by_id
+
+      - name: document_analyst
         description: Analyzes documents and extracts structured findings with citations
         model: openai/gpt-4o
         provider: openrouter
-        output_key: analyst_output
+        output_key: analysis_findings
         system_prompt: |
-          You are a research analyst. Analyze documents and extract findings.
+          You are a research analyst. Analyze the retrieved documents and extract key findings.
           Use extract_findings for each document, preserving metadata for citations.
           Use summarize_documents for overviews.
-          When done, transfer back to the orchestrator.
+
+          Documents to analyze: {retrieved_documents}
         tools:
           - summarize_documents
           - extract_findings
 
+      - name: data_analyst
+        description: Queries databases for supporting quantitative data
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: database_results
+        system_prompt: |
+          You are a data analyst. Based on the research topic, query databases for relevant quantitative data and metrics that support the research.
+
+          Research context: {retrieved_documents}
+        tools:
+          - query_research_db
+          - query_metrics_db
+
+      - name: report_generator
+        description: Produces the final cited research report
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: final_report
+        system_prompt: |
+          You are a report writer. Synthesize the analysis findings and database results into a comprehensive, well-cited research report.
+
+          Analysis findings: {analysis_findings}
+          Database results: {database_results}
+
+          Every claim must reference its source. Use generate_report to produce the final output.
+        tools:
+          - generate_report
+
   - id: triage-agent
-    name: triage_orchestrator
+    type: triage
+    name: triage_pipeline
     description: Incident triage and escalation agent
     model: openai/gpt-4o
     provider: openrouter
-    system_prompt: |
-      You are an incident triage orchestrator. Your workflow:
-      1. Analyze the reported incident
-      2. Transfer to keyword_analyst to check if it matches topics of interest
-      3. Use get_incident_context to check for similar past incidents
-      4. Determine severity and whether to escalate
-      5. If escalation needed, use trigger_alert
-      6. Produce a summary report
-
-      Always explain your triage reasoning clearly.
-    tools:
-      - classify_incident
-      - get_incident_context
-      - trigger_alert
-      - opensearch_retrieve
     sub_agents:
+      - name: issue_extractor
+        description: Extracts structured issue details from the incident report
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: extracted_issue
+        system_prompt: |
+          You are an incident issue extractor. Parse the incident report and extract:
+          - Summary of the issue
+          - Affected systems/services
+          - Timeline of events
+          - Reported severity
+          - Any error codes or identifiers
+
+          Provide a structured extraction of the key details.
+
       - name: keyword_analyst
         description: Analyzes incidents for keyword matches and topic relevance
         model: openai/gpt-4o-mini
         provider: openrouter
         output_key: keyword_analysis
         system_prompt: |
-          You are a keyword and topic analyst. Analyze the incident description
-          to determine if it matches known topics of interest or keywords.
-          Use classify_incident with relevant keywords.
-          Report your findings and transfer back to the orchestrator.
+          You are a keyword and topic analyst. Analyze the extracted issue to determine if it matches known critical topics or keywords. Use classify_incident with relevant keywords.
+
+          Issue details: {extracted_issue}
         tools:
           - classify_incident
+
+      - name: incident_researcher
+        description: Searches for similar past incidents and context
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: incident_research
+        system_prompt: |
+          You are an incident researcher. Search for similar past incidents and gather context. Use get_incident_context and opensearch_retrieve to find related incidents.
+
+          Issue details: {extracted_issue}
+        tools:
+          - get_incident_context
+          - opensearch_retrieve
+
+      - name: severity_classifier
+        description: Classifies incident severity based on impact analysis
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: severity_classification
+        system_prompt: |
+          You are a severity classifier. Based on the extracted issue details, classify the incident severity (P1-P4) considering:
+          - Scope of impact (users, systems affected)
+          - Business criticality
+          - Data loss risk
+          - Service degradation level
+
+          Use classify_incident to produce a formal classification.
+
+          Issue details: {extracted_issue}
+        tools:
+          - classify_incident
+
+      - name: report_agent
+        description: Produces triage summary and triggers alerts if needed
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: triage_report
+        system_prompt: |
+          You are a triage report agent. Synthesize all assessment results into a triage report and determine whether to escalate.
+
+          Keyword analysis: {keyword_analysis}
+          Past incidents: {incident_research}
+          Severity classification: {severity_classification}
+
+          If severity is P1 or P2, use trigger_alert to escalate immediately.
+          Produce a clear triage summary with your recommendation.
+        tools:
+          - trigger_alert

@@ -13,6 +13,7 @@ type AgentsConfig struct {
 
 type AgentConfig struct {
 	ID           string        `yaml:"id"`
+	Type         string        `yaml:"type"`
 	Name         string        `yaml:"name"`
 	Description  string        `yaml:"description"`
 	Model        string        `yaml:"model"`
@@ -21,6 +22,17 @@ type AgentConfig struct {
 	Tools        []string      `yaml:"tools"`
 	SubAgents    []AgentConfig `yaml:"sub_agents,omitempty"`
 	OutputKey    string        `yaml:"output_key,omitempty"`
+	Keywords     []string      `yaml:"keywords,omitempty"`
+}
+
+// FindSubAgent returns the sub-agent config with the given name, or nil.
+func (c *AgentConfig) FindSubAgent(name string) *AgentConfig {
+	for i := range c.SubAgents {
+		if c.SubAgents[i].Name == name {
+			return &c.SubAgents[i]
+		}
+	}
+	return nil
 }
 
 func LoadAgents(path string) (*AgentsConfig, error) {
