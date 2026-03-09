@@ -42,13 +42,27 @@ func Resume(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 			Str("tool", pending.ToolName).
 			Msg("resuming agent")
 
+		// Store the decision so the tool handler can read it
+		core.HITLStore.SetDecision(req.ThreadID, req.Action)
+		core.HITLStore.ClearPending(req.ThreadID)
+
+		// Execute the tool with the stored decision to get the actual result
+		args, _ := pending.Details.(map[string]any)
+		if args == nil {
+			args = map[string]any{}
+		}
+		result, err := core.ToolCaller.Call(pending.ToolName, args, req.ThreadID, pending.ToolCallID)
+		if err != nil {
+			result = map[string]any{"error": err.Error()}
+		}
+
 		// Set SSE headers
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Accel-Buffering", "no")
 
-		// Emit synthetic tool-call announcement so the UI shows "Running..."
+		// Emit synthetic tool-call + result so the UI sees the flow
 		requestID := fmt.Sprintf("chatcmpl-resume-%s", req.ThreadID[:12])
 		cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName, req.ThreadID)
 
@@ -56,32 +70,36 @@ func Resume(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 		sse.WriteSSE(w, cb.ToolCallDelta(0, pending.ToolCallID, pending.ToolName, string(argsJSON)))
 		sse.WriteSSE(w, cb.Finish("tool_calls"))
 
-		// Store the decision so the tool handler can read it
-		core.HITLStore.SetDecision(req.ThreadID, req.Action)
+		// Emit tool result
+		evt := types.ToolResultEvent{}
+		evt.ToolResult.ToolCallID = pending.ToolCallID
+		evt.ToolResult.ToolName = pending.ToolName
+		evt.ToolResult.Result = result
+		sse.WriteSSE(w, evt)
 
-		// Clear pending confirmation
-		core.HITLStore.ClearPending(req.ThreadID)
-
-		// Build resume message
-		var actionDesc string
-		switch req.Action {
-		case "approved":
-			actionDesc = fmt.Sprintf("The user has APPROVED the pending %s operation. Please proceed by calling %s again with the same parameters to execute the operation.", pending.ToolName, pending.ToolName)
-		case "denied":
-			actionDesc = fmt.Sprintf("The user has DENIED the pending %s operation. The operation was cancelled. Please acknowledge this to the user.", pending.ToolName)
-		default:
-			actionDesc = fmt.Sprintf("The user has %s the pending %s operation.", req.Action, pending.ToolName)
+		// Build FunctionResponse content to feed back to the LLM
+		// This satisfies OpenAI's requirement that tool_calls must be followed by tool responses
+		toolResultMsg := &genai.Content{
+			Parts: []*genai.Part{
+				{
+					FunctionResponse: &genai.FunctionResponse{
+						Name:     pending.ToolName,
+						ID:       pending.ToolCallID,
+						Response: result,
+					},
+				},
+			},
+			Role: "user",
 		}
-
-		userMsg := genai.NewContentFromText(actionDesc, genai.RoleUser)
 
 		// Ensure session exists
 		if err := core.SessionManager.GetOrCreate(r.Context(), req.ThreadID); err != nil {
 			logger.Error().Err(err).Msg("failed to get session for resume")
-			http.Error(w, `{"error": "session not found"}`, http.StatusInternalServerError)
+			sse.WriteSSE(w, cb.Finish("stop"))
+			sse.WriteDone(w)
 			return
 		}
 
-		agent.StreamAgentRun(r.Context(), w, core, req.ThreadID, userMsg, logger)
+		agent.StreamAgentRun(r.Context(), w, core, req.ThreadID, toolResultMsg, logger)
 	}
 }

@@ -22,17 +22,23 @@ Available capabilities:
 
 Always provide clear, well-structured responses based on the data you retrieve.`
 
+// ToolCaller executes tools by name, outside the ADK framework.
+type ToolCaller interface {
+	Call(name string, args map[string]any, threadID, callID string) (map[string]any, error)
+}
+
 // Core holds the ADK agent, runner, and supporting services.
 type Core struct {
 	Runner         *runner.Runner
 	SessionManager *SessionManager
 	HITLStore      *HITLStore
+	ToolCaller     ToolCaller
 	Config         *config.Config
 	Logger         zerolog.Logger
 }
 
 // NewCore creates a fully wired Core with ADK agent, runner, and session management.
-func NewCore(cfg *config.Config, tools []tool.Tool, hitlStore *HITLStore, logger zerolog.Logger) (*Core, error) {
+func NewCore(cfg *config.Config, tools []tool.Tool, hitlStore *HITLStore, toolCaller ToolCaller, logger zerolog.Logger) (*Core, error) {
 	// Create OpenAI-compatible model backend
 	llmModel := genaiopenai.New(genaiopenai.Config{
 		APIKey:    cfg.LLMAPIKey,
@@ -69,6 +75,7 @@ func NewCore(cfg *config.Config, tools []tool.Tool, hitlStore *HITLStore, logger
 		Runner:         r,
 		SessionManager: sm,
 		HITLStore:      hitlStore,
+		ToolCaller:     toolCaller,
 		Config:         cfg,
 		Logger:         logger,
 	}, nil

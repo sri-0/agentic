@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 )
 
@@ -20,7 +19,10 @@ type contextKeyType string
 
 const ThreadIDKey contextKeyType = "agentic_thread_id"
 
-// StreamAgentRun executes the agent and streams SSE events to the response writer.
+const maxReActIterations = 10
+
+// StreamAgentRun executes the agent in a ReAct loop, manually executing tools
+// and feeding results back to the LLM until it produces a final text response.
 func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, userMsg *genai.Content, logger zerolog.Logger) {
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -37,93 +39,91 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 	// Emit initial progress
 	writeProgress(w, "planning", "Analyzing...")
 
-	// Run the agent
-	for event, err := range core.Runner.Run(ctx, "default", threadID, userMsg, adkagent.RunConfig{}) {
-		if err != nil {
-			logger.Error().Err(err).Msg("agent run error")
-			writeProgress(w, "error", fmt.Sprintf("Error: %v", err))
-			break
-		}
+	msg := userMsg
 
-		if event.Content == nil {
-			if event.TurnComplete {
+	for iteration := 0; iteration < maxReActIterations; iteration++ {
+		// Collect function calls from this runner iteration
+		var functionCalls []collectedCall
+
+		for event, err := range core.Runner.Run(ctx, "default", threadID, msg, adkagent.RunConfig{}) {
+			if err != nil {
+				logger.Error().Err(err).Msg("agent run error")
+				writeProgress(w, "error", fmt.Sprintf("Error: %v", err))
 				sse.WriteSSE(w, cb.Finish("stop"))
 				sse.WriteDone(w)
 				return
 			}
-			continue
+
+			if event.Content == nil {
+				continue
+			}
+
+			toolCallIdx := 0
+			for _, part := range event.Content.Parts {
+				if part.Text != "" {
+					sse.WriteSSE(w, cb.TextDelta(part.Text))
+				}
+
+				if part.FunctionCall != nil {
+					fc := part.FunctionCall
+					logger.Debug().Str("tool", fc.Name).Msg("tool call")
+
+					writeProgress(w, "executing", fmt.Sprintf("Running %s...", fc.Name))
+
+					argsJSON, _ := json.Marshal(fc.Args)
+					sse.WriteSSE(w, cb.ToolCallDelta(int64(toolCallIdx), fc.ID, fc.Name, string(argsJSON)))
+					sse.WriteSSE(w, cb.Finish("tool_calls"))
+
+					functionCalls = append(functionCalls, collectedCall{
+						ID:   fc.ID,
+						Name: fc.Name,
+						Args: fc.Args,
+					})
+					toolCallIdx++
+				}
+			}
+
+			if event.TurnComplete {
+				break
+			}
 		}
 
-		interrupted := processEventParts(w, event, cb, core, threadID, logger)
-		if interrupted {
-			// HITL interrupt detected — stop streaming
+		// If no function calls, the agent produced a final text response
+		if len(functionCalls) == 0 {
 			sse.WriteSSE(w, cb.Finish("stop"))
 			sse.WriteDone(w)
 			return
 		}
 
-		if event.TurnComplete {
-			sse.WriteSSE(w, cb.Finish("stop"))
-			sse.WriteDone(w)
-			return
-		}
-	}
+		// Execute tools and build response content
+		var responseParts []*genai.Part
+		hitlInterrupted := false
 
-	// If we get here without TurnComplete, still send done
-	sse.WriteSSE(w, cb.Finish("stop"))
-	sse.WriteDone(w)
-}
+		for _, fc := range functionCalls {
+			result, err := core.ToolCaller.Call(fc.Name, fc.Args, threadID, fc.ID)
+			if err != nil {
+				result = map[string]any{"error": err.Error()}
+			}
 
-// processEventParts processes all parts of an event and writes SSE output.
-// Returns true if a HITL interrupt was detected (caller should stop streaming).
-func processEventParts(w http.ResponseWriter, event *session.Event, cb *sse.ChunkBuilder, core *Core, threadID string, logger zerolog.Logger) bool {
-	for i, part := range event.Content.Parts {
-		// Text content
-		if part.Text != "" {
-			sse.WriteSSE(w, cb.TextDelta(part.Text))
-		}
-
-		// Function call (tool invocation by the agent)
-		if part.FunctionCall != nil {
-			fc := part.FunctionCall
-			logger.Debug().Str("tool", fc.Name).Msg("tool call")
-
-			// Emit progress
-			writeProgress(w, "executing", fmt.Sprintf("Running %s...", fc.Name))
-
-			// Marshal args
-			argsJSON, _ := json.Marshal(fc.Args)
-
-			// Emit tool call delta
-			sse.WriteSSE(w, cb.ToolCallDelta(int64(i), fc.ID, fc.Name, string(argsJSON)))
-			sse.WriteSSE(w, cb.Finish("tool_calls"))
-		}
-
-		// Function response (tool result)
-		if part.FunctionResponse != nil {
-			fr := part.FunctionResponse
-
-			// Check for HITL marker
-			if isHITLResponse(fr.Response) {
-				logger.Info().Str("tool", fr.Name).Str("thread_id", threadID).Msg("HITL interrupt")
+			// Check for HITL
+			if isHITLResponse(result) {
+				logger.Info().Str("tool", fc.Name).Str("thread_id", threadID).Msg("HITL interrupt")
 
 				pending := core.HITLStore.GetPending(threadID)
 				if pending == nil {
-					// Build from response data
 					pending = &PendingConfirmation{
-						ToolCallID: fr.ID,
-						ToolName:   fr.Name,
+						ToolCallID: fc.ID,
+						ToolName:   fc.Name,
 					}
-					if p, ok := fr.Response["prompt"].(string); ok {
+					if p, ok := result["prompt"].(string); ok {
 						pending.Prompt = p
 					}
-					if d, ok := fr.Response["details"]; ok {
+					if d, ok := result["details"]; ok {
 						pending.Details = d
 					}
 					core.HITLStore.SetPending(threadID, pending)
 				}
 
-				// Emit tool_interrupt
 				evt := types.ToolInterruptEvent{}
 				evt.ToolInterrupt.ToolCallID = pending.ToolCallID
 				evt.ToolInterrupt.ToolName = pending.ToolName
@@ -132,18 +132,49 @@ func processEventParts(w http.ResponseWriter, event *session.Event, cb *sse.Chun
 				evt.ToolInterrupt.ThreadID = threadID
 				sse.WriteSSE(w, evt)
 
-				return true // signal interrupt
+				hitlInterrupted = true
+				break
 			}
 
-			// Normal tool result
+			// Emit tool result event
 			evt := types.ToolResultEvent{}
-			evt.ToolResult.ToolCallID = fr.ID
-			evt.ToolResult.ToolName = fr.Name
-			evt.ToolResult.Result = fr.Response
+			evt.ToolResult.ToolCallID = fc.ID
+			evt.ToolResult.ToolName = fc.Name
+			evt.ToolResult.Result = result
 			sse.WriteSSE(w, evt)
+
+			responseParts = append(responseParts, &genai.Part{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     fc.Name,
+					ID:       fc.ID,
+					Response: result,
+				},
+			})
+		}
+
+		if hitlInterrupted {
+			sse.WriteSSE(w, cb.Finish("stop"))
+			sse.WriteDone(w)
+			return
+		}
+
+		// Build next message with tool results and feed back to runner
+		msg = &genai.Content{
+			Parts: responseParts,
+			Role:  "user",
 		}
 	}
-	return false
+
+	// Max iterations reached
+	logger.Warn().Int("max", maxReActIterations).Msg("ReAct loop reached max iterations")
+	sse.WriteSSE(w, cb.Finish("stop"))
+	sse.WriteDone(w)
+}
+
+type collectedCall struct {
+	ID   string
+	Name string
+	Args map[string]any
 }
 
 // isHITLResponse checks if a function response indicates HITL is needed.

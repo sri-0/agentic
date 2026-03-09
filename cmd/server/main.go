@@ -61,8 +61,11 @@ func main() {
 	}
 	logger.Info().Strs("tools", tools.ToolNames()).Msg("tools loaded")
 
+	// Create tool executor for manual ReAct loop
+	toolExecutor := tools.NewExecutor(hitlStore)
+
 	// Create agent core
-	core, err := agent.NewCore(cfg, allTools, hitlStore, logger)
+	core, err := agent.NewCore(cfg, allTools, hitlStore, toolExecutor, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to create agent core")
 	}

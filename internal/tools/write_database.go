@@ -30,49 +30,41 @@ type WriteDBResult struct {
 }
 
 // NewWriteDatabaseTool creates the write_database tool with HITL support.
-// The store is used to track pending confirmations and decisions.
 func NewWriteDatabaseTool(store *agent.HITLStore) (tool.Tool, error) {
 	return functiontool.New(functiontool.Config{
 		Name: "write_database",
-		Description: "Write, update, or delete records in the database. This operation modifies data " +
-			"and requires human approval before executing.",
+		Description: "Write, update, or delete records in the database. Use this tool whenever you need to insert, update, or delete data.",
 	}, func(ctx tool.Context, args WriteDBArgs) (WriteDBResult, error) {
-		return writeDBHandler(ctx, args, store)
+		threadID := getThreadID(ctx)
+		callID := ctx.FunctionCallID()
+		return executeWriteDB(args, store, threadID, callID)
 	})
 }
 
-func writeDBHandler(ctx tool.Context, args WriteDBArgs, store *agent.HITLStore) (WriteDBResult, error) {
-	threadID := getThreadID(ctx)
-
-	// Check if a decision has been made for this thread
+// executeWriteDB is the core logic, callable from both ADK and the manual executor.
+func executeWriteDB(args WriteDBArgs, store *agent.HITLStore, threadID, callID string) (WriteDBResult, error) {
 	decision := store.GetAndClearDecision(threadID)
 
 	if decision == "" {
-		// No decision yet — store pending confirmation and return marker
+		prompt := fmt.Sprintf(
+			"The agent wants to perform a **%s** operation on the **%s** table. Do you want to allow this?",
+			args.Operation, args.Table,
+		)
+		details := map[string]any{
+			"table":     args.Table,
+			"operation": args.Operation,
+			"data":      args.Data,
+		}
 		store.SetPending(threadID, &agent.PendingConfirmation{
-			ToolCallID: getFunctionCallID(ctx),
+			ToolCallID: callID,
 			ToolName:   "write_database",
-			Prompt: fmt.Sprintf(
-				"The agent wants to perform a **%s** operation on the **%s** table. Do you want to allow this?",
-				args.Operation, args.Table,
-			),
-			Details: map[string]any{
-				"table":     args.Table,
-				"operation": args.Operation,
-				"data":      args.Data,
-			},
+			Prompt:     prompt,
+			Details:    details,
 		})
 		return WriteDBResult{
 			RequiresConfirmation: true,
-			Prompt: fmt.Sprintf(
-				"The agent wants to perform a **%s** operation on the **%s** table. Do you want to allow this?",
-				args.Operation, args.Table,
-			),
-			Details: map[string]any{
-				"table":     args.Table,
-				"operation": args.Operation,
-				"data":      args.Data,
-			},
+			Prompt:               prompt,
+			Details:              details,
 		}, nil
 	}
 
@@ -95,23 +87,16 @@ func writeDBHandler(ctx tool.Context, args WriteDBArgs, store *agent.HITLStore) 
 
 // getThreadID extracts the thread ID from the tool context.
 func getThreadID(ctx tool.Context) string {
-	// Try to get session ID (which we set to threadID)
 	type sessionProvider interface {
 		Session() interface{ ID() string }
 	}
 	if sp, ok := ctx.(sessionProvider); ok {
 		return sp.Session().ID()
 	}
-	// Fallback: context value
 	if tid, ok := ctx.Value(threadIDKey).(string); ok {
 		return tid
 	}
 	return "unknown"
-}
-
-// getFunctionCallID extracts the function call ID from tool context.
-func getFunctionCallID(ctx tool.Context) string {
-	return ctx.FunctionCallID()
 }
 
 type contextKeyType string
