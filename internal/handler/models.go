@@ -5,18 +5,17 @@ import (
 	"net/http"
 	"time"
 
-	"agentic/internal/agent"
 	"agentic/internal/config"
 )
 
-func Models(core *agent.Core) http.HandlerFunc {
+func Models(cfg *config.Config) http.HandlerFunc {
 	// Pre-build the model list at handler creation time
 	created := time.Now().Unix()
 	var data []map[string]any
 
 	// Add agent models from agents.yaml
-	if core.Config.Agents != nil {
-		for _, a := range core.Config.Agents.Agents {
+	if cfg.Agents != nil {
+		for _, a := range cfg.Agents.Agents {
 			entry := map[string]any{
 				"id":       a.ID,
 				"object":   "model",
@@ -31,8 +30,8 @@ func Models(core *agent.Core) http.HandlerFunc {
 	}
 
 	// Add upstream models from models.yaml
-	if core.Config.Models != nil {
-		for _, m := range core.Config.Models.AllModels() {
+	if cfg.Models != nil {
+		for _, m := range cfg.Models.AllModels() {
 			data = append(data, buildModelEntry(m, created))
 		}
 	}

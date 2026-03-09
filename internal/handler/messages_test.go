@@ -174,7 +174,7 @@ func TestMessages_NonStreaming(t *testing.T) {
 	defer upstream.Close()
 
 	core := newMessagesTestCore(t, upstream)
-	handler := Messages(core, zerolog.Nop())
+	handler := Messages(core.Config, zerolog.Nop())
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -215,7 +215,7 @@ func TestMessages_NonStreaming_ToolUse(t *testing.T) {
 	defer upstream.Close()
 
 	core := newMessagesTestCore(t, upstream)
-	handler := Messages(core, zerolog.Nop())
+	handler := Messages(core.Config, zerolog.Nop())
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -259,7 +259,7 @@ func TestMessages_Streaming(t *testing.T) {
 	defer upstream.Close()
 
 	core := newMessagesTestCore(t, upstream)
-	handler := Messages(core, zerolog.Nop())
+	handler := Messages(core.Config, zerolog.Nop())
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -344,7 +344,7 @@ func TestMessages_Streaming_ToolUse(t *testing.T) {
 	defer upstream.Close()
 
 	core := newMessagesTestCore(t, upstream)
-	handler := Messages(core, zerolog.Nop())
+	handler := Messages(core.Config, zerolog.Nop())
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -417,7 +417,7 @@ func TestMessages_RejectsEmbeddingModel(t *testing.T) {
 		config.Model{ID: "text-embedding-3-small", Type: config.ModelTypeEmbedding, OwnedBy: "openai"},
 	)
 
-	handler := Messages(core, zerolog.Nop())
+	handler := Messages(core.Config, zerolog.Nop())
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

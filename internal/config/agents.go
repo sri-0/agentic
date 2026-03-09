@@ -12,13 +12,15 @@ type AgentsConfig struct {
 }
 
 type AgentConfig struct {
-	ID           string   `yaml:"id"`
-	Name         string   `yaml:"name"`
-	Description  string   `yaml:"description"`
-	Model        string   `yaml:"model"`
-	Provider     string   `yaml:"provider"`
-	SystemPrompt string   `yaml:"system_prompt"`
-	Tools        []string `yaml:"tools"`
+	ID           string        `yaml:"id"`
+	Name         string        `yaml:"name"`
+	Description  string        `yaml:"description"`
+	Model        string        `yaml:"model"`
+	Provider     string        `yaml:"provider"`
+	SystemPrompt string        `yaml:"system_prompt"`
+	Tools        []string      `yaml:"tools"`
+	SubAgents    []AgentConfig `yaml:"sub_agents,omitempty"`
+	OutputKey    string        `yaml:"output_key,omitempty"`
 }
 
 func LoadAgents(path string) (*AgentsConfig, error) {

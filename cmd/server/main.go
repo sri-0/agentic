@@ -10,10 +10,15 @@ import (
 	"syscall"
 	"time"
 
+	"agentic/agents/deepresearch"
+	"agentic/agents/triage"
 	"agentic/internal/agent"
 	"agentic/internal/config"
+	"agentic/internal/rag"
 	"agentic/internal/server"
 	"agentic/internal/tools"
+
+	adkagent "google.golang.org/adk/agent"
 
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
@@ -67,30 +72,55 @@ func main() {
 	cfg.Agents = agentsCfg
 	logger.Info().Strs("agents", agentsCfg.AgentIDs()).Msg("agents config loaded")
 
-	// Use the first agent defined in agents.yaml
-	agentCfg := &agentsCfg.Agents[0]
+	// Build all agents into registry
+	ragClient := rag.NewClient()
+	registry := agent.NewRegistry()
 
-	logger.Info().
-		Str("agent", agentCfg.ID).
-		Str("model", agentCfg.Model).
-		Str("provider", agentCfg.Provider).
-		Msg("starting server")
+	for i := range agentsCfg.Agents {
+		agentCfg := &agentsCfg.Agents[i]
 
-	// Create tools (ADK handles HITL via RequireConfirmation)
-	allTools, err := tools.NewAllTools()
-	if err != nil {
-		logger.Fatal().Err(err).Msg("failed to create tools")
+		var core *agent.Core
+
+		if len(agentCfg.SubAgents) > 0 {
+			var rootAgent adkagent.Agent
+			var buildErr error
+
+			switch agentCfg.ID {
+			case "triage-agent":
+				rootAgent, buildErr = triage.NewAgent(cfg, agentCfg, ragClient)
+			default:
+				// deep-research and any other hierarchical agents
+				rootAgent, buildErr = deepresearch.NewAgent(cfg, agentCfg, ragClient)
+			}
+
+			if buildErr != nil {
+				logger.Fatal().Err(buildErr).Str("agent", agentCfg.ID).Msg("failed to create hierarchical agent")
+			}
+
+			core, err = agent.NewCoreWithAgent(cfg, agentCfg, rootAgent, logger)
+			if err != nil {
+				logger.Fatal().Err(err).Str("agent", agentCfg.ID).Msg("failed to create agent core")
+			}
+			logger.Info().Str("agent", agentCfg.ID).Int("sub_agents", len(agentCfg.SubAgents)).Msg("hierarchical agent loaded")
+		} else {
+			allTools, toolErr := tools.NewAllTools()
+			if toolErr != nil {
+				logger.Fatal().Err(toolErr).Str("agent", agentCfg.ID).Msg("failed to create tools")
+			}
+			core, err = agent.NewCore(cfg, agentCfg, allTools, logger)
+			if err != nil {
+				logger.Fatal().Err(err).Str("agent", agentCfg.ID).Msg("failed to create agent core")
+			}
+			logger.Info().Str("agent", agentCfg.ID).Strs("tools", tools.ToolNames()).Msg("flat agent loaded")
+		}
+
+		registry.Register(agentCfg.ID, core)
 	}
-	logger.Info().Strs("tools", tools.ToolNames()).Msg("tools loaded")
 
-	// Create agent core with ADK runner + session management
-	core, err := agent.NewCore(cfg, agentCfg, allTools, logger)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("failed to create agent core")
-	}
+	logger.Info().Strs("agents", registry.IDs()).Msg("agent registry ready")
 
 	// Build router
-	router := server.NewRouter(core, logger)
+	router := server.NewRouter(registry, cfg, logger)
 
 	// Start server
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func Resume(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
+func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.ResumeRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -26,6 +26,21 @@ func Resume(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 
 		if req.Action == "" {
 			req.Action = "denied"
+		}
+
+		// Find the right core for this thread. Try all registered cores.
+		var core *agent.Core
+		for _, id := range registry.IDs() {
+			c := registry.Get(id)
+			if pending := c.Interrupts.Get(req.ThreadID); pending != nil {
+				core = c
+				break
+			}
+		}
+
+		if core == nil {
+			http.Error(w, `{"error": "no pending confirmation for this thread"}`, http.StatusNotFound)
+			return
 		}
 
 		pending := core.Interrupts.Get(req.ThreadID)
