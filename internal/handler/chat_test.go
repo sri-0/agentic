@@ -163,7 +163,7 @@ func TestChatHandler_ProxyMode(t *testing.T) {
 			Name:      "Test",
 			BaseURL:   upstream.URL,
 			APIKeyEnv: "TEST_PROXY_API_KEY",
-			Models:    []config.Model{{ID: "gpt-4o-mini", OwnedBy: "openai"}},
+			Models:    []config.Model{{ID: "gpt-4o-mini", Type: config.ModelTypeLLM, OwnedBy: "openai"}},
 		}},
 	}
 
