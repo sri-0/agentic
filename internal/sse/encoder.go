@@ -5,41 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	openai "github.com/openai/openai-go/v3"
 )
-
-// ChatCompletionChunk is an OpenAI-compatible SSE chunk.
-type ChatCompletionChunk struct {
-	ID      string        `json:"id"`
-	Object  string        `json:"object"`
-	Created int64         `json:"created"`
-	Model   string        `json:"model,omitempty"`
-	Choices []ChunkChoice `json:"choices"`
-}
-
-type ChunkChoice struct {
-	Index        int         `json:"index"`
-	Delta        ChunkDelta  `json:"delta"`
-	FinishReason *string     `json:"finish_reason"`
-}
-
-type ChunkDelta struct {
-	Role             string          `json:"role,omitempty"`
-	Content          string          `json:"content,omitempty"`
-	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCallDelta `json:"tool_calls,omitempty"`
-}
-
-type ToolCallDelta struct {
-	Index    int                    `json:"index"`
-	ID       string                 `json:"id,omitempty"`
-	Type     string                 `json:"type,omitempty"`
-	Function *ToolCallFunctionDelta `json:"function,omitempty"`
-}
-
-type ToolCallFunctionDelta struct {
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-}
 
 // Encode marshals data to SSE format: "data: {json}\n\n"
 func Encode(data any) ([]byte, error) {
@@ -83,7 +51,7 @@ func WriteDone(w http.ResponseWriter) error {
 	return nil
 }
 
-// ChunkBuilder builds OpenAI-compatible SSE chunks.
+// ChunkBuilder builds OpenAI-compatible SSE chunks using openai-go types.
 type ChunkBuilder struct {
 	RequestID string
 	Model     string
@@ -93,47 +61,39 @@ func NewChunkBuilder(requestID, model string) *ChunkBuilder {
 	return &ChunkBuilder{RequestID: requestID, Model: model}
 }
 
-func (b *ChunkBuilder) base(delta ChunkDelta, finishReason *string) ChatCompletionChunk {
-	return ChatCompletionChunk{
+func (b *ChunkBuilder) base(delta openai.ChatCompletionChunkChoiceDelta, finishReason string) openai.ChatCompletionChunk {
+	return openai.ChatCompletionChunk{
 		ID:      b.RequestID,
-		Object:  "chat.completion.chunk",
 		Created: time.Now().Unix(),
 		Model:   b.Model,
-		Choices: []ChunkChoice{
+		// Object zero value auto-marshals to "chat.completion.chunk"
+		Choices: []openai.ChatCompletionChunkChoice{
 			{Index: 0, Delta: delta, FinishReason: finishReason},
 		},
 	}
 }
 
-func (b *ChunkBuilder) TextDelta(content string) ChatCompletionChunk {
-	return b.base(ChunkDelta{Content: content}, nil)
+func (b *ChunkBuilder) TextDelta(content string) openai.ChatCompletionChunk {
+	return b.base(openai.ChatCompletionChunkChoiceDelta{Content: content}, "")
 }
 
-func (b *ChunkBuilder) ReasoningDelta(content string) ChatCompletionChunk {
-	return b.base(ChunkDelta{ReasoningContent: content}, nil)
-}
-
-func (b *ChunkBuilder) ToolCallDelta(index int, id, name, args string) ChatCompletionChunk {
-	delta := ChunkDelta{
-		ToolCalls: []ToolCallDelta{
+func (b *ChunkBuilder) ToolCallDelta(index int64, id, name, args string) openai.ChatCompletionChunk {
+	return b.base(openai.ChatCompletionChunkChoiceDelta{
+		ToolCalls: []openai.ChatCompletionChunkChoiceDeltaToolCall{
 			{
-				Index: index,
-				ID:    id,
-				Type:  "function",
-				Function: &ToolCallFunctionDelta{
-					Name:      name,
-					Arguments: args,
-				},
+				Index:    index,
+				ID:       id,
+				Type:     "function",
+				Function: openai.ChatCompletionChunkChoiceDeltaToolCallFunction{Name: name, Arguments: args},
 			},
 		},
-	}
-	return b.base(delta, nil)
+	}, "")
 }
 
-func (b *ChunkBuilder) ToolCallsDelta(calls []ToolCallDelta) ChatCompletionChunk {
-	return b.base(ChunkDelta{ToolCalls: calls}, nil)
+func (b *ChunkBuilder) ToolCallsDelta(calls []openai.ChatCompletionChunkChoiceDeltaToolCall) openai.ChatCompletionChunk {
+	return b.base(openai.ChatCompletionChunkChoiceDelta{ToolCalls: calls}, "")
 }
 
-func (b *ChunkBuilder) Finish(reason string) ChatCompletionChunk {
-	return b.base(ChunkDelta{}, &reason)
+func (b *ChunkBuilder) Finish(reason string) openai.ChatCompletionChunk {
+	return b.base(openai.ChatCompletionChunkChoiceDelta{}, reason)
 }

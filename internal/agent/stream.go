@@ -95,7 +95,7 @@ func processEventParts(w http.ResponseWriter, event *session.Event, cb *sse.Chun
 			argsJSON, _ := json.Marshal(fc.Args)
 
 			// Emit tool call delta
-			sse.WriteSSE(w, cb.ToolCallDelta(i, fc.ID, fc.Name, string(argsJSON)))
+			sse.WriteSSE(w, cb.ToolCallDelta(int64(i), fc.ID, fc.Name, string(argsJSON)))
 			sse.WriteSSE(w, cb.Finish("tool_calls"))
 		}
 
