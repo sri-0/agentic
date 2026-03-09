@@ -9,6 +9,7 @@ import (
 )
 
 // Forward proxies a raw chat completion request body to the downstream LLM.
+// For SSE streams, it flushes each chunk as it arrives from upstream.
 func Forward(w http.ResponseWriter, baseURL, apiKey string, rawBody []byte) {
 	url := strings.TrimRight(baseURL, "/") + "/chat/completions"
 
@@ -35,8 +36,21 @@ func Forward(w http.ResponseWriter, baseURL, apiKey string, rawBody []byte) {
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	io.Copy(w, resp.Body)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
+	flusher, canFlush := w.(http.Flusher)
+	buf := make([]byte, 4096)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			w.Write(buf[:n])
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			if err != io.EOF {
+				// Log but don't return error to client mid-stream
+			}
+			break
+		}
 	}
 }

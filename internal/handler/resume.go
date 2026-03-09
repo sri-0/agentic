@@ -6,11 +6,9 @@ import (
 	"net/http"
 
 	"agentic/internal/agent"
-	"agentic/internal/sse"
 	"agentic/internal/types"
 
 	"github.com/rs/zerolog"
-	"google.golang.org/genai"
 )
 
 func Resume(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
@@ -56,50 +54,6 @@ func Resume(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 			result = map[string]any{"error": err.Error()}
 		}
 
-		// Set SSE headers
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("X-Accel-Buffering", "no")
-
-		// Emit synthetic tool-call + result so the UI sees the flow
-		requestID := fmt.Sprintf("chatcmpl-resume-%s", req.ThreadID[:12])
-		cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName, req.ThreadID)
-
-		argsJSON, _ := json.Marshal(pending.Details)
-		sse.WriteSSE(w, cb.ToolCallDelta(0, pending.ToolCallID, pending.ToolName, string(argsJSON)))
-		sse.WriteSSE(w, cb.Finish("tool_calls"))
-
-		// Emit tool result
-		evt := types.ToolResultEvent{}
-		evt.ToolResult.ToolCallID = pending.ToolCallID
-		evt.ToolResult.ToolName = pending.ToolName
-		evt.ToolResult.Result = result
-		sse.WriteSSE(w, evt)
-
-		// Build FunctionResponse content to feed back to the LLM
-		// This satisfies OpenAI's requirement that tool_calls must be followed by tool responses
-		toolResultMsg := &genai.Content{
-			Parts: []*genai.Part{
-				{
-					FunctionResponse: &genai.FunctionResponse{
-						Name:     pending.ToolName,
-						ID:       pending.ToolCallID,
-						Response: result,
-					},
-				},
-			},
-			Role: "user",
-		}
-
-		// Ensure session exists
-		if err := core.SessionManager.GetOrCreate(r.Context(), req.ThreadID); err != nil {
-			logger.Error().Err(err).Msg("failed to get session for resume")
-			sse.WriteSSE(w, cb.Finish("stop"))
-			sse.WriteDone(w)
-			return
-		}
-
-		agent.StreamAgentRun(r.Context(), w, core, req.ThreadID, toolResultMsg, logger)
+		agent.StreamResumeRun(r.Context(), w, core, req.ThreadID, pending.ToolCallID, pending.ToolName, args, result, logger)
 	}
 }

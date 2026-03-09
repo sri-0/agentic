@@ -70,7 +70,6 @@ func (b *ChunkBuilder) base(delta openai.ChatCompletionChunkChoiceDelta, finishR
 			ID:      b.RequestID,
 			Created: time.Now().Unix(),
 			Model:   b.Model,
-			// Object zero value auto-marshals to "chat.completion.chunk"
 			Choices: []openai.ChatCompletionChunkChoice{
 				{Index: 0, Delta: delta, FinishReason: finishReason},
 			},
