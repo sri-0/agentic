@@ -22,6 +22,7 @@ func NewRouter(core *agent.Core, logger zerolog.Logger) *mux.Router {
 	r.HandleFunc("/v1/models", handler.Models(core)).Methods("GET")
 	r.HandleFunc("/v1/chat/completions", handler.Chat(core, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(core, logger)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/messages", handler.Messages(core, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/agent/resume", handler.Resume(core, logger)).Methods("POST", "OPTIONS")
 
 	return r
