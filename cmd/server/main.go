@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -45,10 +46,34 @@ func main() {
 		logger = logger.Level(level)
 	}
 
+	// Load YAML configs from CONFIG_DIR
+	configDir := cfg.ConfigDir
+	logger.Info().Str("config_dir", configDir).Msg("loading config files")
+
+	modelsCfg, err := config.LoadModels(filepath.Join(configDir, "models.yaml"))
+	if err != nil {
+		logger.Warn().Err(err).Msg("models.yaml not found, using env config only")
+	} else {
+		cfg.Models = modelsCfg
+		logger.Info().Int("providers", len(modelsCfg.Providers)).
+			Int("models", len(modelsCfg.AllModels())).
+			Msg("models config loaded")
+	}
+
+	agentsCfg, err := config.LoadAgents(filepath.Join(configDir, "agents.yaml"))
+	if err != nil {
+		logger.Fatal().Err(err).Msg("agents.yaml is required")
+	}
+	cfg.Agents = agentsCfg
+	logger.Info().Strs("agents", agentsCfg.AgentIDs()).Msg("agents config loaded")
+
+	// Use the first agent defined in agents.yaml
+	agentCfg := &agentsCfg.Agents[0]
+
 	logger.Info().
-		Str("model", cfg.LLMModel).
-		Str("agent_model", cfg.AgentModelName).
-		Str("llm_base_url", cfg.LLMBaseURL).
+		Str("agent", agentCfg.ID).
+		Str("model", agentCfg.Model).
+		Str("provider", agentCfg.Provider).
 		Msg("starting server")
 
 	// Create tools (ADK handles HITL via RequireConfirmation)
@@ -59,7 +84,7 @@ func main() {
 	logger.Info().Strs("tools", tools.ToolNames()).Msg("tools loaded")
 
 	// Create agent core with ADK runner + session management
-	core, err := agent.NewCore(cfg, allTools, logger)
+	core, err := agent.NewCore(cfg, agentCfg, allTools, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to create agent core")
 	}

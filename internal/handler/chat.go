@@ -28,8 +28,10 @@ func Chat(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 			return
 		}
 
-		if req.Model != core.Config.AgentModelName {
-			proxy.Forward(w, core.Config.LLMBaseURL, core.Config.LLMAPIKey, rawBody)
+		// Route: agent mode vs proxy mode
+		if !agent.IsAgentModel(core.Config, req.Model) {
+			baseURL, apiKey, client := agent.ProxyProvider(core.Config, req.Model)
+			proxy.Forward(w, baseURL, apiKey, rawBody, client)
 			return
 		}
 

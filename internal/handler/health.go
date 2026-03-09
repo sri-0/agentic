@@ -13,7 +13,7 @@ func Health(core *agent.Core) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"status":     "ok",
-			"model":      core.Config.LLMModel,
+			"agent":      core.AgentID,
 			"tools":      tools.ToolNames(),
 			"hitl_tools": tools.HITLToolNames(),
 		})

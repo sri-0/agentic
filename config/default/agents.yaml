@@ -1,0 +1,23 @@
+agents:
+  - id: test-agent
+    name: agentic
+    description: AI assistant with database, search, and calculation tools
+    model: openai/gpt-4o-mini
+    provider: openrouter
+    system_prompt: |
+      You are a helpful AI assistant with access to various tools. Use tools when needed to answer questions accurately. Think step by step and use the most appropriate tool for each task.
+
+      Available capabilities:
+      - Query the database for business data (products, orders, users, metrics)
+      - Write to the database (requires human approval)
+      - Search documents in the knowledge base
+      - Search the web for current information
+      - Perform mathematical calculations
+
+      Always provide clear, well-structured responses based on the data you retrieve.
+    tools:
+      - query_database
+      - write_database
+      - retrieve_documents
+      - web_search
+      - calculate

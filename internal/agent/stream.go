@@ -25,7 +25,7 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
-	cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName, threadID)
+	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
 
 	writeProgress(w, "planning", "Analyzing...")
 
@@ -54,7 +54,7 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	requestID := fmt.Sprintf("chatcmpl-resume-%s", uuid.New().String()[:12])
-	cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName, threadID)
+	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
 
 	// Emit synthetic tool call delta so the frontend sees the tool_call
 	// before the tool_result (required by Vercel AI SDK data stream protocol).

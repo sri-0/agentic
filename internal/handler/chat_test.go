@@ -44,10 +44,12 @@ func newTestCore(t *testing.T, customAgent adkagent.Agent) *agent.Core {
 		Runner:         r,
 		SessionManager: sm,
 		Interrupts:     agent.NewInterruptStore(),
+		AgentID:        "test-agent",
 		Config: &config.Config{
-			AgentModelName: "test-agent",
-			AppName:        appName,
-			LLMBaseURL:     "http://unused",
+			AppName: appName,
+			Agents: &config.AgentsConfig{
+				Agents: []config.AgentConfig{{ID: "test-agent"}},
+			},
 		},
 		Logger: zerolog.Nop(),
 	}
@@ -152,8 +154,18 @@ func TestChatHandler_ProxyMode(t *testing.T) {
 	}))
 	defer upstream.Close()
 
+	t.Setenv("TEST_PROXY_API_KEY", "test-key")
+
 	core := newTestCore(t, makeTextAgent(t))
-	core.Config.LLMBaseURL = upstream.URL
+	core.Config.Models = &config.ModelsConfig{
+		Providers: []config.Provider{{
+			ID:        "test",
+			Name:      "Test",
+			BaseURL:   upstream.URL,
+			APIKeyEnv: "TEST_PROXY_API_KEY",
+			Models:    []config.Model{{ID: "gpt-4o-mini", OwnedBy: "openai"}},
+		}},
+	}
 
 	handler := Chat(core, zerolog.Nop())
 

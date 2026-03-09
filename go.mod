@@ -12,6 +12,7 @@ require (
 	github.com/sethvargo/go-envconfig v1.1.0
 	google.golang.org/adk v0.5.0
 	google.golang.org/genai v1.40.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

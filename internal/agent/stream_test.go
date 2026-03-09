@@ -45,9 +45,9 @@ func newTestCore(t *testing.T, customAgent adkagent.Agent) *Core {
 		Runner:         r,
 		SessionManager: sm,
 		Interrupts:     NewInterruptStore(),
+		AgentID:        "test-agent",
 		Config: &config.Config{
-			AgentModelName: "test-agent",
-			AppName:        appName,
+			AppName: appName,
 		},
 		Logger: zerolog.Nop(),
 	}

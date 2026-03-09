@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"net/http"
 
 	"agentic/internal/config"
 
@@ -12,17 +13,6 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 )
-
-const systemInstruction = `You are a helpful AI assistant with access to various tools. Use tools when needed to answer questions accurately. Think step by step and use the most appropriate tool for each task.
-
-Available capabilities:
-- Query the database for business data (products, orders, users, metrics)
-- Write to the database (requires human approval)
-- Search documents in the knowledge base
-- Search the web for current information
-- Perform mathematical calculations
-
-Always provide clear, well-structured responses based on the data you retrieve.`
 
 // PendingInterrupt stores the minimal info needed to map a thread to its
 // ADK confirmation call ID so the resume endpoint can construct the
@@ -73,21 +63,25 @@ type Core struct {
 	Runner         *runner.Runner
 	SessionManager *SessionManager
 	Interrupts     *InterruptStore
+	AgentID        string
 	Config         *config.Config
 	Logger         zerolog.Logger
 }
 
-func NewCore(cfg *config.Config, tools []tool.Tool, logger zerolog.Logger) (*Core, error) {
+func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool, logger zerolog.Logger) (*Core, error) {
+	// Resolve provider config for the agent's LLM
+	baseURL, apiKey := resolveProvider(cfg, agentCfg)
+
 	llmModel := genaiopenai.New(genaiopenai.Config{
-		APIKey:    cfg.LLMAPIKey,
-		BaseURL:   cfg.LLMBaseURL,
-		ModelName: cfg.LLMModel,
+		APIKey:    apiKey,
+		BaseURL:   baseURL,
+		ModelName: agentCfg.Model,
 	})
 
 	agentInstance, err := llmagent.New(llmagent.Config{
-		Name:        cfg.AppName,
+		Name:        agentCfg.Name,
 		Model:       llmModel,
-		Instruction: systemInstruction,
+		Instruction: agentCfg.SystemPrompt,
 		Tools:       tools,
 	})
 	if err != nil {
@@ -115,7 +109,58 @@ func NewCore(cfg *config.Config, tools []tool.Tool, logger zerolog.Logger) (*Cor
 		Runner:         r,
 		SessionManager: sm,
 		Interrupts:     NewInterruptStore(),
+		AgentID:        agentCfg.ID,
 		Config:         cfg,
 		Logger:         logger,
 	}, nil
 }
+
+// resolveProvider returns the base URL and API key for the agent's provider.
+func resolveProvider(cfg *config.Config, agentCfg *config.AgentConfig) (baseURL, apiKey string) {
+	if cfg.Models != nil && agentCfg.Provider != "" {
+		if p := cfg.Models.FindProvider(agentCfg.Provider); p != nil {
+			baseURL = p.BaseURL
+			apiKey = p.APIKey()
+			if baseURL != "" && apiKey != "" {
+				return baseURL, apiKey
+			}
+		}
+	}
+	return "", ""
+}
+
+// AgentModelIDs returns the list of model IDs that should be handled as agents
+// (not proxied to upstream).
+func AgentModelIDs(cfg *config.Config) []string {
+	if cfg.Agents != nil {
+		return cfg.Agents.AgentIDs()
+	}
+	return nil
+}
+
+// IsAgentModel returns true if the given model ID is an agent model.
+func IsAgentModel(cfg *config.Config, modelID string) bool {
+	for _, id := range AgentModelIDs(cfg) {
+		if id == modelID {
+			return true
+		}
+	}
+	return false
+}
+
+// ProxyProvider returns the base URL, API key, and optional custom HTTP client
+// for proxying non-agent models. It checks models.yaml providers first, then
+// falls back to env config. The returned client is nil when no custom TLS is needed.
+func ProxyProvider(cfg *config.Config, modelID string) (baseURL, apiKey string, client *http.Client) {
+	if cfg.Models != nil {
+		if p := cfg.Models.FindProviderForModel(modelID); p != nil {
+			key := p.APIKey()
+			if p.BaseURL != "" && key != "" {
+				c, _ := p.HTTPClient() // nil if no custom TLS
+				return p.BaseURL, key, c
+			}
+		}
+	}
+	return "", "", nil
+}
+

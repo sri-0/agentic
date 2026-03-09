@@ -1,0 +1,611 @@
+providers:
+  - id: openrouter
+    name: OpenRouter
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: LLM_API_KEY
+    # ssl_client_cert_env: OPENROUTER_CLIENT_CERT
+    # ssl_client_key_env: OPENROUTER_CLIENT_KEY
+    # ssl_client_key_password_env: OPENROUTER_CLIENT_KEY_PASSWORD
+    # ssl_trust_store_env: OPENROUTER_TRUST_STORE
+    models:
+      # ── OpenAI ──────────────────────────────────────────────────────────
+      - id: openai/gpt-4o
+        name: GPT-4o
+        owned_by: openai
+        description: Most capable GPT-4 model with vision and tool calling.
+        created: 2024-05-13
+        context_length: 128000
+        capabilities: [tool_calling, vision, json_mode, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/gpt-4o-mini
+        name: GPT-4o Mini
+        owned_by: openai
+        description: Small, fast, and affordable GPT-4o variant.
+        released_at: 2024-07-18
+        context_length: 128000
+        capabilities: [tool_calling, vision, json_mode, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/gpt-4.1
+        name: GPT-4.1
+        owned_by: openai
+        description: Latest GPT-4.1 flagship model with improved coding and instruction following.
+        released_at: 2025-04-14
+        context_length: 1047576
+        capabilities: [tool_calling, vision, json_mode, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/gpt-4.1-mini
+        name: GPT-4.1 Mini
+        owned_by: openai
+        description: Fast and affordable GPT-4.1 variant.
+        released_at: 2025-04-14
+        context_length: 1047576
+        capabilities: [tool_calling, vision, json_mode, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/gpt-4.1-nano
+        name: GPT-4.1 Nano
+        owned_by: openai
+        description: Smallest and fastest GPT-4.1 model.
+        released_at: 2025-04-14
+        context_length: 1047576
+        capabilities: [tool_calling, vision, json_mode, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/o1
+        name: o1
+        owned_by: openai
+        description: Reasoning model for complex problem solving.
+        released_at: 2024-12-05
+        context_length: 200000
+        capabilities: [tool_calling, vision, reasoning, streaming]
+        supported_parameters: [max_tokens, temperature]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/o1-mini
+        name: o1 Mini
+        owned_by: openai
+        description: Fast reasoning model for STEM tasks.
+        released_at: 2024-09-12
+        context_length: 128000
+        capabilities: [reasoning, streaming]
+        supported_parameters: [max_tokens, temperature]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/o1-pro
+        name: o1 Pro
+        owned_by: openai
+        description: Enhanced o1 with more compute for hard problems.
+        released_at: 2025-03-19
+        context_length: 200000
+        capabilities: [tool_calling, vision, reasoning, streaming]
+        supported_parameters: [max_tokens, temperature]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/o3
+        name: o3
+        owned_by: openai
+        description: Most capable reasoning model.
+        released_at: 2025-04-16
+        context_length: 200000
+        capabilities: [tool_calling, vision, reasoning, streaming]
+        supported_parameters: [max_tokens, temperature, reasoning_effort]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/o3-mini
+        name: o3 Mini
+        owned_by: openai
+        description: Fast and affordable reasoning model.
+        released_at: 2025-01-31
+        context_length: 200000
+        capabilities: [tool_calling, reasoning, streaming]
+        supported_parameters: [max_tokens, temperature, reasoning_effort]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      - id: openai/o4-mini
+        name: o4 Mini
+        owned_by: openai
+        description: Latest compact reasoning model.
+        released_at: 2025-04-16
+        context_length: 200000
+        capabilities: [tool_calling, vision, reasoning, streaming]
+        supported_parameters: [max_tokens, temperature, reasoning_effort]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: o200k_base
+          instruct_type: none
+
+      # ── Anthropic ───────────────────────────────────────────────────────
+      - id: anthropic/claude-sonnet-4
+        name: Claude Sonnet 4
+        owned_by: anthropic
+        description: Balanced performance and speed from Anthropic.
+        released_at: 2025-06-18
+        context_length: 200000
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: claude
+          instruct_type: none
+
+      - id: anthropic/claude-opus-4
+        name: Claude Opus 4
+        owned_by: anthropic
+        description: Most capable Claude model for complex tasks.
+        released_at: 2025-06-18
+        context_length: 200000
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: claude
+          instruct_type: none
+
+      - id: anthropic/claude-3.5-sonnet
+        name: Claude 3.5 Sonnet
+        owned_by: anthropic
+        description: High performance Claude 3.5 model.
+        released_at: 2024-10-22
+        context_length: 200000
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: claude
+          instruct_type: none
+
+      - id: anthropic/claude-3.5-haiku
+        name: Claude 3.5 Haiku
+        owned_by: anthropic
+        description: Fast and affordable Claude model.
+        released_at: 2024-11-04
+        context_length: 200000
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: claude
+          instruct_type: none
+
+      # ── Google ──────────────────────────────────────────────────────────
+      - id: google/gemini-2.5-pro-preview
+        name: Gemini 2.5 Pro
+        owned_by: google
+        description: Google's most capable model with thinking.
+        released_at: 2025-03-25
+        context_length: 1048576
+        capabilities: [tool_calling, vision, json_mode, reasoning, streaming]
+        architecture:
+          input_modalities: [text, image, audio, video]
+          output_modalities: [text]
+          tokenizer: gemini
+          instruct_type: none
+
+      - id: google/gemini-2.5-flash-preview
+        name: Gemini 2.5 Flash
+        owned_by: google
+        description: Fast Gemini model with thinking capabilities.
+        released_at: 2025-04-17
+        context_length: 1048576
+        capabilities: [tool_calling, vision, json_mode, reasoning, streaming]
+        architecture:
+          input_modalities: [text, image, audio, video]
+          output_modalities: [text]
+          tokenizer: gemini
+          instruct_type: none
+
+      - id: google/gemini-2.0-flash-001
+        name: Gemini 2.0 Flash
+        owned_by: google
+        description: Fast and efficient Gemini model.
+        released_at: 2025-02-05
+        context_length: 1048576
+        capabilities: [tool_calling, vision, json_mode, streaming]
+        architecture:
+          input_modalities: [text, image, audio, video]
+          output_modalities: [text]
+          tokenizer: gemini
+          instruct_type: none
+
+      - id: google/gemini-2.0-flash-lite-001
+        name: Gemini 2.0 Flash Lite
+        owned_by: google
+        description: Lightest Gemini model for high-throughput tasks.
+        released_at: 2025-02-27
+        context_length: 1048576
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: gemini
+          instruct_type: none
+
+      # ── Meta Llama ──────────────────────────────────────────────────────
+      - id: meta-llama/llama-4-maverick
+        name: Llama 4 Maverick
+        owned_by: meta
+        description: Llama 4 flagship MoE model.
+        released_at: 2025-04-05
+        context_length: 1048576
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: llama4
+          instruct_type: llama4
+
+      - id: meta-llama/llama-4-scout
+        name: Llama 4 Scout
+        owned_by: meta
+        description: Efficient Llama 4 MoE model with 10M context.
+        released_at: 2025-04-05
+        context_length: 10485760
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: llama4
+          instruct_type: llama4
+
+      - id: meta-llama/llama-3.3-70b-instruct
+        name: Llama 3.3 70B
+        owned_by: meta
+        description: Strong open-weight model for general tasks.
+        released_at: 2024-12-06
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: llama3
+          instruct_type: llama3
+
+      - id: meta-llama/llama-3.1-405b-instruct
+        name: Llama 3.1 405B
+        owned_by: meta
+        description: Largest open-weight Llama model.
+        released_at: 2024-07-23
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: llama3
+          instruct_type: llama3
+
+      - id: meta-llama/llama-3.1-70b-instruct
+        name: Llama 3.1 70B
+        owned_by: meta
+        description: Balanced Llama 3.1 model.
+        released_at: 2024-07-23
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: llama3
+          instruct_type: llama3
+
+      - id: meta-llama/llama-3.1-8b-instruct
+        name: Llama 3.1 8B
+        owned_by: meta
+        description: Small and fast Llama model.
+        released_at: 2024-07-23
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: llama3
+          instruct_type: llama3
+
+      # ── DeepSeek ────────────────────────────────────────────────────────
+      - id: deepseek/deepseek-r1
+        name: DeepSeek R1
+        owned_by: deepseek
+        description: Open reasoning model competitive with o1.
+        released_at: 2025-01-20
+        context_length: 163840
+        capabilities: [reasoning, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: deepseek
+          instruct_type: deepseek
+
+      - id: deepseek/deepseek-chat-v3-0324
+        name: DeepSeek V3 0324
+        owned_by: deepseek
+        description: Strong general-purpose chat model.
+        released_at: 2025-03-24
+        context_length: 163840
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: deepseek
+          instruct_type: deepseek
+
+      - id: deepseek/deepseek-r1-0528
+        name: DeepSeek R1 0528
+        owned_by: deepseek
+        description: Updated reasoning model with improved performance.
+        released_at: 2025-05-28
+        context_length: 163840
+        capabilities: [reasoning, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: deepseek
+          instruct_type: deepseek
+
+      # ── Qwen ────────────────────────────────────────────────────────────
+      - id: qwen/qwen-2.5-72b-instruct
+        name: Qwen 2.5 72B
+        owned_by: qwen
+        description: Large Qwen model for complex tasks.
+        released_at: 2024-09-19
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: qwen
+          instruct_type: chatml
+
+      - id: qwen/qwen-2.5-coder-32b-instruct
+        name: Qwen 2.5 Coder 32B
+        owned_by: qwen
+        description: Specialized coding model.
+        released_at: 2024-11-12
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: qwen
+          instruct_type: chatml
+
+      - id: qwen/qwen3-235b-a22b
+        name: Qwen3 235B
+        owned_by: qwen
+        description: Largest Qwen3 MoE model with thinking.
+        released_at: 2025-04-29
+        context_length: 131072
+        capabilities: [tool_calling, reasoning, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: qwen
+          instruct_type: chatml
+
+      - id: qwen/qwen3-30b-a3b
+        name: Qwen3 30B
+        owned_by: qwen
+        description: Efficient Qwen3 MoE model.
+        released_at: 2025-04-29
+        context_length: 131072
+        capabilities: [tool_calling, reasoning, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: qwen
+          instruct_type: chatml
+
+      # ── Mistral ─────────────────────────────────────────────────────────
+      - id: mistralai/mistral-large-2411
+        name: Mistral Large
+        owned_by: mistral
+        description: Mistral's flagship model.
+        released_at: 2024-11-20
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: mistral
+          instruct_type: mistral
+
+      - id: mistralai/mistral-small-3.1-24b-instruct
+        name: Mistral Small 3.1
+        owned_by: mistral
+        description: Fast and efficient Mistral model with vision.
+        released_at: 2025-03-18
+        context_length: 131072
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image]
+          output_modalities: [text]
+          tokenizer: mistral
+          instruct_type: mistral
+
+      - id: mistralai/codestral-2501
+        name: Codestral
+        owned_by: mistral
+        description: Specialized coding model from Mistral.
+        released_at: 2025-01-29
+        context_length: 262144
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: mistral
+          instruct_type: mistral
+
+      # ── Cohere ──────────────────────────────────────────────────────────
+      - id: cohere/command-r-plus
+        name: Command R+
+        owned_by: cohere
+        description: Cohere's most capable model for RAG and enterprise.
+        released_at: 2024-04-04
+        context_length: 128000
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: cohere
+          instruct_type: cohere
+
+      - id: cohere/command-r
+        name: Command R
+        owned_by: cohere
+        description: Balanced Cohere model for RAG.
+        released_at: 2024-03-14
+        context_length: 128000
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: cohere
+          instruct_type: cohere
+
+      - id: cohere/command-a
+        name: Command A
+        owned_by: cohere
+        description: Latest Cohere flagship model.
+        released_at: 2025-03-13
+        context_length: 256000
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: cohere
+          instruct_type: cohere
+
+      # ── xAI ─────────────────────────────────────────────────────────────
+      - id: x-ai/grok-3-beta
+        name: Grok 3 Beta
+        owned_by: xai
+        description: xAI's most capable model.
+        released_at: 2025-02-18
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: grok
+          instruct_type: none
+
+      - id: x-ai/grok-3-mini-beta
+        name: Grok 3 Mini Beta
+        owned_by: xai
+        description: Fast reasoning model from xAI.
+        released_at: 2025-02-18
+        context_length: 131072
+        capabilities: [tool_calling, reasoning, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: grok
+          instruct_type: none
+
+      - id: x-ai/grok-2-1212
+        name: Grok 2
+        owned_by: xai
+        description: Previous generation Grok model.
+        released_at: 2024-12-12
+        context_length: 131072
+        capabilities: [tool_calling, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: grok
+          instruct_type: none
+
+      # ── Amazon ──────────────────────────────────────────────────────────
+      - id: amazon/nova-pro-v1
+        name: Nova Pro
+        owned_by: amazon
+        description: Amazon's capable multimodal model.
+        released_at: 2024-12-03
+        context_length: 300000
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image, video]
+          output_modalities: [text]
+          tokenizer: nova
+          instruct_type: none
+
+      - id: amazon/nova-lite-v1
+        name: Nova Lite
+        owned_by: amazon
+        description: Fast and affordable Amazon model.
+        released_at: 2024-12-03
+        context_length: 300000
+        capabilities: [tool_calling, vision, streaming]
+        architecture:
+          input_modalities: [text, image, video]
+          output_modalities: [text]
+          tokenizer: nova
+          instruct_type: none
+
+      # ── Microsoft ───────────────────────────────────────────────────────
+      - id: microsoft/phi-4
+        name: Phi-4
+        owned_by: microsoft
+        description: Compact model excelling at reasoning and STEM.
+        released_at: 2024-12-14
+        context_length: 16384
+        capabilities: [streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: phi
+          instruct_type: chatml
+
+      - id: microsoft/mai-ds-r1
+        name: MAI DS R1
+        owned_by: microsoft
+        description: Microsoft's distilled reasoning model based on DeepSeek R1.
+        released_at: 2025-04-21
+        context_length: 131072
+        capabilities: [reasoning, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+          tokenizer: deepseek
+          instruct_type: deepseek

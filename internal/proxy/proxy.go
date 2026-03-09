@@ -10,7 +10,8 @@ import (
 
 // Forward proxies a raw chat completion request body to the downstream LLM.
 // For SSE streams, it flushes each chunk as it arrives from upstream.
-func Forward(w http.ResponseWriter, baseURL, apiKey string, rawBody []byte) {
+// If client is nil, http.DefaultClient is used.
+func Forward(w http.ResponseWriter, baseURL, apiKey string, rawBody []byte, client *http.Client) {
 	url := strings.TrimRight(baseURL, "/") + "/chat/completions"
 
 	upstream, err := http.NewRequest("POST", url, bytes.NewReader(rawBody))
@@ -22,7 +23,11 @@ func Forward(w http.ResponseWriter, baseURL, apiKey string, rawBody []byte) {
 	upstream.Header.Set("Content-Type", "application/json")
 	upstream.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(upstream)
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	resp, err := client.Do(upstream)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error": "upstream request failed: %s"}`, err), http.StatusBadGateway)
 		return
