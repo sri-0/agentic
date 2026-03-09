@@ -241,9 +241,16 @@ func TestResumeHandler(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify SSE stream
-	if !strings.Contains(w.Body.String(), "data: [DONE]") {
+	// Verify SSE stream contains synthetic tool call before text
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, "data: [DONE]") {
 		t.Error("expected [DONE] sentinel")
+	}
+	if !strings.Contains(bodyStr, "write_database") {
+		t.Error("expected synthetic tool_call with write_database in resume stream")
+	}
+	if !strings.Contains(bodyStr, "tool_calls") {
+		t.Error("expected finish_reason tool_calls in resume stream")
 	}
 
 	// Verify interrupt was cleared

@@ -56,6 +56,12 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 	requestID := fmt.Sprintf("chatcmpl-resume-%s", uuid.New().String()[:12])
 	cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName, threadID)
 
+	// Emit synthetic tool call delta so the frontend sees the tool_call
+	// before the tool_result (required by Vercel AI SDK data stream protocol).
+	argsJSON, _ := json.Marshal(pending.Details)
+	sse.WriteSSE(w, cb.ToolCallDelta(0, pending.ToolCallID, pending.ToolName, string(argsJSON)))
+	sse.WriteSSE(w, cb.Finish("tool_calls"))
+
 	// Build the confirmation FunctionResponse per ADK's expected format
 	funcResponse := &genai.FunctionResponse{
 		Name: toolconfirmation.FunctionCallName, // "adk_request_confirmation"

@@ -489,6 +489,8 @@ func TestStreamResumeRun(t *testing.T) {
 
 	var textDeltas []string
 	var hasStopFinish bool
+	var hasToolCall bool
+	var hasToolCallsFinish bool
 
 	for _, evt := range events {
 		choices, ok := evt["choices"].([]any)
@@ -497,14 +499,36 @@ func TestStreamResumeRun(t *testing.T) {
 		}
 		choice := choices[0].(map[string]any)
 		delta := choice["delta"].(map[string]any)
+		if tcs, ok := delta["tool_calls"].([]any); ok && len(tcs) > 0 {
+			hasToolCall = true
+			tc := tcs[0].(map[string]any)
+			if tc["id"] != "call_r1" {
+				t.Errorf("expected synthetic tool call id call_r1, got %v", tc["id"])
+			}
+			fn := tc["function"].(map[string]any)
+			if fn["name"] != "write_database" {
+				t.Errorf("expected tool name write_database, got %v", fn["name"])
+			}
+		}
 		if content, ok := delta["content"].(string); ok && content != "" {
 			textDeltas = append(textDeltas, content)
 		}
-		if fr, ok := choice["finish_reason"].(string); ok && fr == "stop" {
-			hasStopFinish = true
+		if fr, ok := choice["finish_reason"].(string); ok {
+			if fr == "tool_calls" {
+				hasToolCallsFinish = true
+			}
+			if fr == "stop" {
+				hasStopFinish = true
+			}
 		}
 	}
 
+	if !hasToolCall {
+		t.Error("expected synthetic tool_call delta before tool result")
+	}
+	if !hasToolCallsFinish {
+		t.Error("expected finish_reason=tool_calls before tool result")
+	}
 	if len(textDeltas) < 2 {
 		t.Errorf("expected streaming text after resume, got %d: %v", len(textDeltas), textDeltas)
 	}
