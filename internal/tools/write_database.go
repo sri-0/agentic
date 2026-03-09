@@ -1,10 +1,7 @@
 package tools
 
 import (
-	"fmt"
 	"time"
-
-	"agentic/internal/agent"
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -17,64 +14,28 @@ type WriteDBArgs struct {
 }
 
 type WriteDBResult struct {
-	Success              bool           `json:"success"`
-	Status               string         `json:"status,omitempty"`
-	Table                string         `json:"table,omitempty"`
-	Operation            string         `json:"operation,omitempty"`
-	RowsAffected         int            `json:"rows_affected,omitempty"`
-	Timestamp            string         `json:"timestamp,omitempty"`
-	Data                 map[string]any `json:"data,omitempty"`
-	RequiresConfirmation bool           `json:"requires_confirmation,omitempty"`
-	Prompt               string         `json:"prompt,omitempty"`
-	Details              map[string]any `json:"details,omitempty"`
+	Success      bool           `json:"success"`
+	Status       string         `json:"status,omitempty"`
+	Table        string         `json:"table,omitempty"`
+	Operation    string         `json:"operation,omitempty"`
+	RowsAffected int            `json:"rows_affected,omitempty"`
+	Timestamp    string         `json:"timestamp,omitempty"`
+	Data         map[string]any `json:"data,omitempty"`
 }
 
-// NewWriteDatabaseTool creates the write_database tool with HITL support.
-func NewWriteDatabaseTool(store *agent.HITLStore) (tool.Tool, error) {
+// NewWriteDatabaseTool creates the write_database tool with ADK's built-in
+// RequireConfirmation for HITL approval.
+func NewWriteDatabaseTool() (tool.Tool, error) {
 	return functiontool.New(functiontool.Config{
-		Name: "write_database",
-		Description: "Write, update, or delete records in the database. Use this tool whenever you need to insert, update, or delete data.",
-	}, func(ctx tool.Context, args WriteDBArgs) (WriteDBResult, error) {
-		threadID := getThreadID(ctx)
-		callID := ctx.FunctionCallID()
-		return executeWriteDB(args, store, threadID, callID)
-	})
+		Name:                "write_database",
+		Description:         "Write, update, or delete records in the database. Use this tool whenever you need to insert, update, or delete data.",
+		RequireConfirmation: true, // ADK handles the confirmation flow
+	}, writeDatabaseHandler)
 }
 
-// executeWriteDB is the core logic, callable from both ADK and the manual executor.
-func executeWriteDB(args WriteDBArgs, store *agent.HITLStore, threadID, callID string) (WriteDBResult, error) {
-	decision := store.GetAndClearDecision(threadID)
-
-	if decision == "" {
-		prompt := fmt.Sprintf(
-			"The agent wants to perform a **%s** operation on the **%s** table. Do you want to allow this?",
-			args.Operation, args.Table,
-		)
-		details := map[string]any{
-			"table":     args.Table,
-			"operation": args.Operation,
-			"data":      args.Data,
-		}
-		store.SetPending(threadID, &agent.PendingConfirmation{
-			ToolCallID: callID,
-			ToolName:   "write_database",
-			Prompt:     prompt,
-			Details:    details,
-		})
-		return WriteDBResult{
-			RequiresConfirmation: true,
-			Prompt:               prompt,
-			Details:              details,
-		}, nil
-	}
-
-	if decision != "approved" {
-		return WriteDBResult{
-			Success: false,
-			Status:  fmt.Sprintf("Operation %s by user", decision),
-		}, nil
-	}
-
+// writeDatabaseHandler is the actual business logic — only called after
+// confirmation is approved by ADK's built-in mechanism.
+func writeDatabaseHandler(_ tool.Context, args WriteDBArgs) (WriteDBResult, error) {
 	return WriteDBResult{
 		Success:      true,
 		Table:        args.Table,
@@ -84,21 +45,3 @@ func executeWriteDB(args WriteDBArgs, store *agent.HITLStore, threadID, callID s
 		Data:         args.Data,
 	}, nil
 }
-
-// getThreadID extracts the thread ID from the tool context.
-func getThreadID(ctx tool.Context) string {
-	type sessionProvider interface {
-		Session() interface{ ID() string }
-	}
-	if sp, ok := ctx.(sessionProvider); ok {
-		return sp.Session().ID()
-	}
-	if tid, ok := ctx.Value(threadIDKey).(string); ok {
-		return tid
-	}
-	return "unknown"
-}
-
-type contextKeyType string
-
-const threadIDKey contextKeyType = "agentic_thread_id"

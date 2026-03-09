@@ -1,18 +1,16 @@
 package tools
 
 import (
-	"agentic/internal/agent"
-
 	"google.golang.org/adk/tool"
 )
 
 // NewAllTools creates all available tools for the agent.
-func NewAllTools(hitlStore *agent.HITLStore) ([]tool.Tool, error) {
+func NewAllTools() ([]tool.Tool, error) {
 	qdb, err := NewQueryDatabaseTool()
 	if err != nil {
 		return nil, err
 	}
-	wdb, err := NewWriteDatabaseTool(hitlStore)
+	wdb, err := NewWriteDatabaseTool()
 	if err != nil {
 		return nil, err
 	}

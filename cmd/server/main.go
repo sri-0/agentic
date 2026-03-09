@@ -51,21 +51,15 @@ func main() {
 		Str("llm_base_url", cfg.LLMBaseURL).
 		Msg("starting server")
 
-	// Create HITL store
-	hitlStore := agent.NewHITLStore()
-
-	// Create tools
-	allTools, err := tools.NewAllTools(hitlStore)
+	// Create tools (ADK handles HITL via RequireConfirmation)
+	allTools, err := tools.NewAllTools()
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to create tools")
 	}
 	logger.Info().Strs("tools", tools.ToolNames()).Msg("tools loaded")
 
-	// Create tool executor for manual ReAct loop
-	toolExecutor := tools.NewExecutor(hitlStore)
-
-	// Create agent core
-	core, err := agent.NewCore(cfg, allTools, hitlStore, toolExecutor, logger)
+	// Create agent core with ADK runner + session management
+	core, err := agent.NewCore(cfg, allTools, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to create agent core")
 	}

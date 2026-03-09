@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"iter"
 	"net/http/httptest"
 	"strings"
@@ -12,113 +11,45 @@ import (
 	"time"
 
 	"agentic/internal/config"
-	"agentic/internal/types"
 
 	"github.com/rs/zerolog"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
+	"google.golang.org/adk/runner"
+	"google.golang.org/adk/session"
+	"google.golang.org/adk/tool/toolconfirmation"
 	"google.golang.org/genai"
+
+	"agentic/internal/types"
 )
 
-// mockLLM implements model.LLM for testing.
-type mockLLM struct {
-	name      string
-	responses []mockResponse
-	callCount int
-}
+// newTestCore creates a Core with a custom agent for testing.
+func newTestCore(t *testing.T, customAgent adkagent.Agent) *Core {
+	t.Helper()
 
-type mockResponse struct {
-	// Partial text chunks to stream before the final response
-	partialTexts []string
-	// Final response content
-	text      string
-	toolCalls []mockToolCall
-}
+	sessionService := session.InMemoryService()
+	appName := "test_app"
 
-type mockToolCall struct {
-	id   string
-	name string
-	args map[string]any
-}
-
-func (m *mockLLM) Name() string { return m.name }
-
-func (m *mockLLM) GenerateContent(_ context.Context, _ *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
-	return func(yield func(*model.LLMResponse, error) bool) {
-		if m.callCount >= len(m.responses) {
-			yield(nil, fmt.Errorf("unexpected call %d", m.callCount))
-			return
-		}
-		resp := m.responses[m.callCount]
-		m.callCount++
-
-		if stream {
-			// Yield partial text tokens for streaming
-			for _, text := range resp.partialTexts {
-				partial := &model.LLMResponse{
-					Content: &genai.Content{
-						Role:  genai.RoleModel,
-						Parts: []*genai.Part{{Text: text}},
-					},
-					Partial:      true,
-					TurnComplete: false,
-				}
-				if !yield(partial, nil) {
-					return
-				}
-			}
-		}
-
-		// Yield final response
-		var parts []*genai.Part
-		if resp.text != "" {
-			parts = append(parts, &genai.Part{Text: resp.text})
-		}
-		for _, tc := range resp.toolCalls {
-			parts = append(parts, &genai.Part{
-				FunctionCall: &genai.FunctionCall{
-					ID:   tc.id,
-					Name: tc.name,
-					Args: tc.args,
-				},
-			})
-		}
-
-		final := &model.LLMResponse{
-			Content: &genai.Content{
-				Role:  genai.RoleModel,
-				Parts: parts,
-			},
-			Partial:      false,
-			TurnComplete: true,
-		}
-		yield(final, nil)
+	r, err := runner.New(runner.Config{
+		AppName:        appName,
+		Agent:          customAgent,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-}
 
-// mockToolCaller implements ToolCaller for testing.
-type mockToolCaller struct {
-	results map[string]map[string]any
-}
+	sm := NewSessionManager(sessionService, appName, zerolog.Nop())
 
-func (m *mockToolCaller) Call(name string, _ map[string]any, _, _ string) (map[string]any, error) {
-	if result, ok := m.results[name]; ok {
-		return result, nil
-	}
-	return map[string]any{"error": "unknown tool"}, nil
-}
-
-func newTestCore(llm *mockLLM, toolCaller *mockToolCaller) *Core {
 	return &Core{
-		Model:         llm,
-		ToolDecls:     nil,
-		Conversations: NewConversationStore(),
-		HITLStore:     NewHITLStore(),
-		ToolCaller:    toolCaller,
+		Runner:         r,
+		SessionManager: sm,
+		Interrupts:     NewInterruptStore(),
 		Config: &config.Config{
 			AgentModelName: "test-agent",
+			AppName:        appName,
 		},
-		SystemInstruction: "You are a test assistant.",
-		Logger:            zerolog.Nop(),
+		Logger: zerolog.Nop(),
 	}
 }
 
@@ -143,31 +74,184 @@ func parseSSEEvents(body string) []map[string]any {
 	return events
 }
 
-func TestStreamAgentRun_SimpleTextResponse(t *testing.T) {
-	llm := &mockLLM{
-		name: "test-model",
-		responses: []mockResponse{
-			{
-				partialTexts: []string{"Hello", " world", "!"},
-				text:         "Hello world!",
-			},
+// makeTextAgent creates an agent that yields streaming partial events then a final text.
+func makeTextAgent(t *testing.T, partials []string, finalText string) adkagent.Agent {
+	t.Helper()
+	a, err := adkagent.New(adkagent.Config{
+		Name: "text_agent",
+		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				// Yield partial streaming events
+				for _, text := range partials {
+					evt := session.NewEvent(ctx.InvocationID())
+					evt.LLMResponse = model.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{Text: text}},
+						},
+						Partial: true,
+					}
+					evt.Author = "text_agent"
+					if !yield(evt, nil) {
+						return
+					}
+				}
+				// Yield final response
+				evt := session.NewEvent(ctx.InvocationID())
+				evt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role:  genai.RoleModel,
+						Parts: []*genai.Part{{Text: finalText}},
+					},
+					TurnComplete: true,
+				}
+				evt.Author = "text_agent"
+				yield(evt, nil)
+			}
 		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	core := newTestCore(llm, &mockToolCaller{})
+	return a
+}
+
+// makeToolCallAgent creates an agent that yields a tool call, then a tool response,
+// then final text.
+func makeToolCallAgent(t *testing.T) adkagent.Agent {
+	t.Helper()
+	a, err := adkagent.New(adkagent.Config{
+		Name: "tool_agent",
+		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				// Yield tool call event
+				callEvt := session.NewEvent(ctx.InvocationID())
+				callEvt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{{
+							FunctionCall: &genai.FunctionCall{
+								ID:   "call_001",
+								Name: "query_database",
+								Args: map[string]any{"sql": "SELECT * FROM products"},
+							},
+						}},
+					},
+				}
+				callEvt.Author = "tool_agent"
+				if !yield(callEvt, nil) {
+					return
+				}
+
+				// Yield tool response event
+				respEvt := session.NewEvent(ctx.InvocationID())
+				respEvt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:       "call_001",
+								Name:     "query_database",
+								Response: map[string]any{"row_count": 5, "table": "products"},
+							},
+						}},
+					},
+				}
+				respEvt.Author = "tool_agent"
+				if !yield(respEvt, nil) {
+					return
+				}
+
+				// Yield streaming text partials
+				for _, text := range []string{"Here are ", "the results."} {
+					partial := session.NewEvent(ctx.InvocationID())
+					partial.LLMResponse = model.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{Text: text}},
+						},
+						Partial: true,
+					}
+					partial.Author = "tool_agent"
+					if !yield(partial, nil) {
+						return
+					}
+				}
+
+				// Final text
+				finalEvt := session.NewEvent(ctx.InvocationID())
+				finalEvt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role:  genai.RoleModel,
+						Parts: []*genai.Part{{Text: "Here are the results."}},
+					},
+					TurnComplete: true,
+				}
+				finalEvt.Author = "tool_agent"
+				yield(finalEvt, nil)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// makeHITLAgent creates an agent that yields a tool call followed by an
+// adk_request_confirmation event, simulating the ADK HITL flow.
+func makeHITLAgent(t *testing.T) adkagent.Agent {
+	t.Helper()
+	a, err := adkagent.New(adkagent.Config{
+		Name: "hitl_agent",
+		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				// Yield the confirmation request event (adk_request_confirmation)
+				confirmEvt := session.NewEvent(ctx.InvocationID())
+				confirmEvt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{{
+							FunctionCall: &genai.FunctionCall{
+								ID:   "confirm_001",
+								Name: toolconfirmation.FunctionCallName,
+								Args: map[string]any{
+									"hint": "Please approve write_database operation",
+									"originalFunctionCall": &genai.FunctionCall{
+										ID:   "call_write_001",
+										Name: "write_database",
+										Args: map[string]any{"table": "users", "operation": "insert"},
+									},
+								},
+							},
+						}},
+					},
+				}
+				confirmEvt.Actions.SkipSummarization = true
+				confirmEvt.Author = "hitl_agent"
+				yield(confirmEvt, nil)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestStreamAgentRun_SimpleTextResponse(t *testing.T) {
+	agent := makeTextAgent(t, []string{"Hello", " world", "!"}, "Hello world!")
+	core := newTestCore(t, agent)
+
 	w := httptest.NewRecorder()
-	logger := zerolog.Nop()
+	messages := []types.ChatMessage{{Role: "user", Content: "Hi"}}
 
-	messages := []types.ChatMessage{
-		{Role: "user", Content: "Hi"},
-	}
-
-	StreamAgentRun(context.Background(), w, core, "thread-1", messages, logger)
+	StreamAgentRun(context.Background(), w, core, "thread-1", messages, zerolog.Nop())
 
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	// Verify SSE headers
 	ct := w.Header().Get("Content-Type")
 	if ct != "text/event-stream" {
 		t.Errorf("expected text/event-stream, got %s", ct)
@@ -178,7 +262,6 @@ func TestStreamAgentRun_SimpleTextResponse(t *testing.T) {
 		t.Fatal("expected SSE events, got none")
 	}
 
-	// Check we got streaming text deltas
 	var textDeltas []string
 	var hasFinishStop bool
 	var hasProgress bool
@@ -211,44 +294,19 @@ func TestStreamAgentRun_SimpleTextResponse(t *testing.T) {
 	if !hasFinishStop {
 		t.Error("expected finish_reason=stop")
 	}
-
-	// Verify body ends with [DONE]
 	if !strings.Contains(w.Body.String(), "data: [DONE]") {
 		t.Error("expected data: [DONE] sentinel")
 	}
 }
 
 func TestStreamAgentRun_ToolCallAndResult(t *testing.T) {
-	llm := &mockLLM{
-		name: "test-model",
-		responses: []mockResponse{
-			{
-				// First call: LLM wants to use a tool
-				toolCalls: []mockToolCall{
-					{id: "call_001", name: "query_database", args: map[string]any{"sql": "SELECT * FROM products"}},
-				},
-			},
-			{
-				// Second call: LLM responds with final text after tool result
-				partialTexts: []string{"Here are ", "the results."},
-				text:         "Here are the results.",
-			},
-		},
-	}
-	toolCaller := &mockToolCaller{
-		results: map[string]map[string]any{
-			"query_database": {"table": "products", "row_count": 5, "rows": []any{}},
-		},
-	}
-	core := newTestCore(llm, toolCaller)
+	agent := makeToolCallAgent(t)
+	core := newTestCore(t, agent)
+
 	w := httptest.NewRecorder()
-	logger := zerolog.Nop()
+	messages := []types.ChatMessage{{Role: "user", Content: "Show me all products"}}
 
-	messages := []types.ChatMessage{
-		{Role: "user", Content: "Show me all products"},
-	}
-
-	StreamAgentRun(context.Background(), w, core, "thread-2", messages, logger)
+	StreamAgentRun(context.Background(), w, core, "thread-2", messages, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -309,52 +367,28 @@ func TestStreamAgentRun_ToolCallAndResult(t *testing.T) {
 	if !hasStopFinish {
 		t.Error("expected finish_reason=stop")
 	}
-
-	// Verify 2 LLM calls were made
-	if llm.callCount != 2 {
-		t.Errorf("expected 2 LLM calls, got %d", llm.callCount)
-	}
 }
 
 func TestStreamAgentRun_HITLInterrupt(t *testing.T) {
-	llm := &mockLLM{
-		name: "test-model",
-		responses: []mockResponse{
-			{
-				toolCalls: []mockToolCall{
-					{id: "call_hitl", name: "write_database", args: map[string]any{"table": "users", "operation": "insert"}},
-				},
-			},
-		},
-	}
-	toolCaller := &mockToolCaller{
-		results: map[string]map[string]any{
-			"write_database": {
-				"requires_confirmation": true,
-				"prompt":                "Allow insert on users?",
-				"details":              map[string]any{"table": "users"},
-			},
-		},
-	}
-	core := newTestCore(llm, toolCaller)
+	agent := makeHITLAgent(t)
+	core := newTestCore(t, agent)
+
 	w := httptest.NewRecorder()
-	logger := zerolog.Nop()
+	messages := []types.ChatMessage{{Role: "user", Content: "Insert a new user"}}
 
-	messages := []types.ChatMessage{
-		{Role: "user", Content: "Insert a new user"},
-	}
-
-	StreamAgentRun(context.Background(), w, core, "thread-hitl", messages, logger)
+	StreamAgentRun(context.Background(), w, core, "thread-hitl", messages, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
 	var hasInterrupt bool
+	var hasToolCall bool
+
 	for _, evt := range events {
 		if ti, ok := evt["tool_interrupt"]; ok {
 			hasInterrupt = true
 			interrupt := ti.(map[string]any)
-			if interrupt["toolCallId"] != "call_hitl" {
-				t.Errorf("expected toolCallId call_hitl, got %v", interrupt["toolCallId"])
+			if interrupt["toolCallId"] != "call_write_001" {
+				t.Errorf("expected toolCallId call_write_001, got %v", interrupt["toolCallId"])
 			}
 			if interrupt["toolName"] != "write_database" {
 				t.Errorf("expected toolName write_database, got %v", interrupt["toolName"])
@@ -363,45 +397,49 @@ func TestStreamAgentRun_HITLInterrupt(t *testing.T) {
 				t.Errorf("expected thread_id thread-hitl, got %v", interrupt["thread_id"])
 			}
 		}
+		choices, ok := evt["choices"].([]any)
+		if !ok || len(choices) == 0 {
+			continue
+		}
+		choice := choices[0].(map[string]any)
+		delta := choice["delta"].(map[string]any)
+		if tcs, ok := delta["tool_calls"].([]any); ok && len(tcs) > 0 {
+			hasToolCall = true
+		}
 	}
 
 	if !hasInterrupt {
 		t.Error("expected tool_interrupt event")
 	}
-
-	// Verify conversation was saved for resume
-	saved := core.Conversations.Get("thread-hitl")
-	if len(saved) == 0 {
-		t.Error("expected conversation to be saved for resume")
+	if !hasToolCall {
+		t.Error("expected tool_call delta for the original write_database call")
 	}
 
-	// Verify HITL store has pending confirmation
-	pending := core.HITLStore.GetPending("thread-hitl")
+	// Verify interrupt was stored
+	pending := core.Interrupts.Get("thread-hitl")
 	if pending == nil {
-		t.Fatal("expected pending HITL confirmation")
+		t.Fatal("expected pending interrupt to be stored")
 	}
-	if pending.ToolCallID != "call_hitl" {
-		t.Errorf("expected pending tool call id call_hitl, got %s", pending.ToolCallID)
+	if pending.ConfirmationCallID != "confirm_001" {
+		t.Errorf("expected confirmation call ID confirm_001, got %s", pending.ConfirmationCallID)
+	}
+	if pending.ToolCallID != "call_write_001" {
+		t.Errorf("expected tool call ID call_write_001, got %s", pending.ToolCallID)
+	}
+	if pending.ToolName != "write_database" {
+		t.Errorf("expected tool name write_database, got %s", pending.ToolName)
 	}
 }
 
 func TestStreamAgentRun_StreamingTimestamps(t *testing.T) {
-	// Verify that partial text tokens are emitted incrementally, not all at once
-	llm := &mockLLM{
-		name: "test-model",
-		responses: []mockResponse{
-			{
-				partialTexts: []string{"tok1", "tok2", "tok3", "tok4", "tok5"},
-				text:         "tok1tok2tok3tok4tok5",
-			},
-		},
-	}
-	core := newTestCore(llm, &mockToolCaller{})
-	w := httptest.NewRecorder()
-	logger := zerolog.Nop()
+	partials := []string{"tok1", "tok2", "tok3", "tok4", "tok5"}
+	agent := makeTextAgent(t, partials, "tok1tok2tok3tok4tok5")
+	core := newTestCore(t, agent)
 
+	w := httptest.NewRecorder()
 	start := time.Now()
-	StreamAgentRun(context.Background(), w, core, "thread-ts", []types.ChatMessage{{Role: "user", Content: "test"}}, logger)
+	StreamAgentRun(context.Background(), w, core, "thread-ts",
+		[]types.ChatMessage{{Role: "user", Content: "test"}}, zerolog.Nop())
 	elapsed := time.Since(start)
 
 	events := parseSSEEvents(w.Body.String())
@@ -421,72 +459,60 @@ func TestStreamAgentRun_StreamingTimestamps(t *testing.T) {
 	if textCount < 5 {
 		t.Errorf("expected at least 5 text delta events (streaming), got %d", textCount)
 	}
-
-	// Should complete quickly since it's a mock (no network delay)
 	if elapsed > 5*time.Second {
 		t.Errorf("streaming took too long (%v), possible buffering issue", elapsed)
 	}
 }
 
 func TestStreamResumeRun(t *testing.T) {
-	llm := &mockLLM{
-		name: "test-model",
-		responses: []mockResponse{
-			{
-				partialTexts: []string{"Done! ", "Record inserted."},
-				text:         "Done! Record inserted.",
-			},
-		},
-	}
-	core := newTestCore(llm, &mockToolCaller{})
+	// Make an agent that returns text on the resume call (confirmation response triggers re-run)
+	resumeAgent := makeTextAgent(t, []string{"Done! ", "Record inserted."}, "Done! Record inserted.")
+	core := newTestCore(t, resumeAgent)
 
-	// Pre-populate conversation store (simulating saved state from HITL interrupt)
-	core.Conversations.Append("thread-resume",
-		&genai.Content{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "Insert a user"}}},
-		&genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{
-			FunctionCall: &genai.FunctionCall{ID: "call_r1", Name: "write_database", Args: map[string]any{"table": "users"}},
-		}}},
-	)
+	// Pre-create the session
+	if err := core.SessionManager.GetOrCreate(context.Background(), "thread-resume"); err != nil {
+		t.Fatal(err)
+	}
+
+	pending := &PendingInterrupt{
+		ConfirmationCallID: "confirm_r1",
+		ToolCallID:         "call_r1",
+		ToolName:           "write_database",
+		Prompt:             "Approve write?",
+		Details:            map[string]any{"table": "users"},
+	}
 
 	w := httptest.NewRecorder()
-	logger := zerolog.Nop()
-
-	toolResult := map[string]any{"success": true, "rows_affected": 1}
-	StreamResumeRun(context.Background(), w, core, "thread-resume",
-		"call_r1", "write_database", map[string]any{"table": "users"}, toolResult, logger)
+	StreamResumeRun(context.Background(), w, core, "thread-resume", pending, true, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
-	var hasToolCall bool
-	var hasToolResult bool
 	var textDeltas []string
+	var hasStopFinish bool
 
 	for _, evt := range events {
-		if _, ok := evt["tool_result"]; ok {
-			hasToolResult = true
-		}
 		choices, ok := evt["choices"].([]any)
 		if !ok || len(choices) == 0 {
 			continue
 		}
 		choice := choices[0].(map[string]any)
 		delta := choice["delta"].(map[string]any)
-		if tcs, ok := delta["tool_calls"].([]any); ok && len(tcs) > 0 {
-			hasToolCall = true
-		}
 		if content, ok := delta["content"].(string); ok && content != "" {
 			textDeltas = append(textDeltas, content)
 		}
+		if fr, ok := choice["finish_reason"].(string); ok && fr == "stop" {
+			hasStopFinish = true
+		}
 	}
 
-	if !hasToolCall {
-		t.Error("expected synthetic tool_call delta for resume")
-	}
-	if !hasToolResult {
-		t.Error("expected tool_result event for resume")
-	}
 	if len(textDeltas) < 2 {
-		t.Errorf("expected streaming text after resume, got %d", len(textDeltas))
+		t.Errorf("expected streaming text after resume, got %d: %v", len(textDeltas), textDeltas)
+	}
+	if !hasStopFinish {
+		t.Error("expected finish_reason=stop after resume")
+	}
+	if !strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Error("expected [DONE] sentinel")
 	}
 }
 
@@ -513,20 +539,28 @@ func TestMessageToContents(t *testing.T) {
 	}
 }
 
-func TestConversationStore(t *testing.T) {
-	store := NewConversationStore()
+func TestInterruptStore(t *testing.T) {
+	store := NewInterruptStore()
 
-	if got := store.Get("thread-1"); len(got) != 0 {
-		t.Errorf("expected empty, got %d", len(got))
+	if got := store.Get("thread-1"); got != nil {
+		t.Errorf("expected nil, got %v", got)
 	}
 
-	store.Append("thread-1", &genai.Content{Role: "user", Parts: []*genai.Part{{Text: "hi"}}})
-	if got := store.Get("thread-1"); len(got) != 1 {
-		t.Errorf("expected 1, got %d", len(got))
+	store.Set("thread-1", &PendingInterrupt{
+		ConfirmationCallID: "c1",
+		ToolCallID:         "t1",
+		ToolName:           "write_database",
+	})
+	got := store.Get("thread-1")
+	if got == nil {
+		t.Fatal("expected pending interrupt")
+	}
+	if got.ToolCallID != "t1" {
+		t.Errorf("expected t1, got %s", got.ToolCallID)
 	}
 
 	store.Clear("thread-1")
-	if got := store.Get("thread-1"); len(got) != 0 {
-		t.Errorf("expected empty after clear, got %d", len(got))
+	if got := store.Get("thread-1"); got != nil {
+		t.Errorf("expected nil after clear, got %v", got)
 	}
 }

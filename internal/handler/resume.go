@@ -28,32 +28,25 @@ func Resume(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 			req.Action = "denied"
 		}
 
-		pending := core.HITLStore.GetPending(req.ThreadID)
+		pending := core.Interrupts.Get(req.ThreadID)
 		if pending == nil {
 			http.Error(w, `{"error": "no pending confirmation for this thread"}`, http.StatusNotFound)
 			return
 		}
 
+		approved := req.Action == "approved"
+
 		logger.Info().
 			Str("thread_id", req.ThreadID).
 			Str("action", req.Action).
 			Str("tool", pending.ToolName).
+			Bool("approved", approved).
 			Msg("resuming agent")
 
-		// Store the decision so the tool handler can read it
-		core.HITLStore.SetDecision(req.ThreadID, req.Action)
-		core.HITLStore.ClearPending(req.ThreadID)
+		// Clear the pending interrupt
+		core.Interrupts.Clear(req.ThreadID)
 
-		// Execute the tool with the stored decision to get the actual result
-		args, _ := pending.Details.(map[string]any)
-		if args == nil {
-			args = map[string]any{}
-		}
-		result, err := core.ToolCaller.Call(pending.ToolName, args, req.ThreadID, pending.ToolCallID)
-		if err != nil {
-			result = map[string]any{"error": err.Error()}
-		}
-
-		agent.StreamResumeRun(r.Context(), w, core, req.ThreadID, pending.ToolCallID, pending.ToolName, args, result, logger)
+		// Resume via the runner with the confirmation response
+		agent.StreamResumeRun(r.Context(), w, core, req.ThreadID, pending, approved, logger)
 	}
 }

@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"context"
+
 	"agentic/internal/config"
 
 	genaiopenai "github.com/achetronic/adk-utils-go/genai/openai"
 	"github.com/rs/zerolog"
-	"google.golang.org/adk/model"
+	"google.golang.org/adk/agent/llmagent"
+	"google.golang.org/adk/runner"
+	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
-	"google.golang.org/genai"
 )
 
 const systemInstruction = `You are a helpful AI assistant with access to various tools. Use tools when needed to answer questions accurately. Think step by step and use the most appropriate tool for each task.
@@ -21,56 +24,98 @@ Available capabilities:
 
 Always provide clear, well-structured responses based on the data you retrieve.`
 
-type ToolCaller interface {
-	Call(name string, args map[string]any, threadID, callID string) (map[string]any, error)
+// PendingInterrupt stores the minimal info needed to map a thread to its
+// ADK confirmation call ID so the resume endpoint can construct the
+// FunctionResponse to send back to the runner.
+type PendingInterrupt struct {
+	ConfirmationCallID string         // the adk_request_confirmation function call ID
+	ToolCallID         string         // the original tool's function call ID
+	ToolName           string         // e.g. "write_database"
+	Prompt             string         // human-readable hint
+	Details            map[string]any // original tool args for display
+}
+
+// InterruptStore is a thin thread-safe map from threadID → PendingInterrupt.
+type InterruptStore struct {
+	mu      chan struct{} // simple mutex via buffered channel
+	pending map[string]*PendingInterrupt
+}
+
+func NewInterruptStore() *InterruptStore {
+	s := &InterruptStore{
+		mu:      make(chan struct{}, 1),
+		pending: make(map[string]*PendingInterrupt),
+	}
+	s.mu <- struct{}{} // initialize unlocked
+	return s
+}
+
+func (s *InterruptStore) Set(threadID string, p *PendingInterrupt) {
+	<-s.mu
+	s.pending[threadID] = p
+	s.mu <- struct{}{}
+}
+
+func (s *InterruptStore) Get(threadID string) *PendingInterrupt {
+	<-s.mu
+	p := s.pending[threadID]
+	s.mu <- struct{}{}
+	return p
+}
+
+func (s *InterruptStore) Clear(threadID string) {
+	<-s.mu
+	delete(s.pending, threadID)
+	s.mu <- struct{}{}
 }
 
 type Core struct {
-	Model              model.LLM
-	ToolDecls          []*genai.Tool
-	Conversations      *ConversationStore
-	HITLStore          *HITLStore
-	ToolCaller         ToolCaller
-	Config             *config.Config
-	SystemInstruction  string
-	Logger             zerolog.Logger
+	Runner         *runner.Runner
+	SessionManager *SessionManager
+	Interrupts     *InterruptStore
+	Config         *config.Config
+	Logger         zerolog.Logger
 }
 
-func NewCore(cfg *config.Config, tools []tool.Tool, hitlStore *HITLStore, toolCaller ToolCaller, logger zerolog.Logger) (*Core, error) {
+func NewCore(cfg *config.Config, tools []tool.Tool, logger zerolog.Logger) (*Core, error) {
 	llmModel := genaiopenai.New(genaiopenai.Config{
 		APIKey:    cfg.LLMAPIKey,
 		BaseURL:   cfg.LLMBaseURL,
 		ModelName: cfg.LLMModel,
 	})
 
-	toolDecls := buildToolDeclarations(tools)
+	agentInstance, err := llmagent.New(llmagent.Config{
+		Name:        cfg.AppName,
+		Model:       llmModel,
+		Instruction: systemInstruction,
+		Tools:       tools,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sessionService := session.InMemoryService()
+	sm := NewSessionManager(sessionService, cfg.AppName, logger)
+
+	r, err := runner.New(runner.Config{
+		AppName:        cfg.AppName,
+		Agent:          agentInstance,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Pre-create a default session for startup validation
+	if err := sm.GetOrCreate(context.Background(), "default"); err != nil {
+		logger.Warn().Err(err).Msg("failed to pre-create default session")
+	}
 
 	return &Core{
-		Model:             llmModel,
-		ToolDecls:         toolDecls,
-		Conversations:     NewConversationStore(),
-		HITLStore:         hitlStore,
-		ToolCaller:        toolCaller,
-		Config:            cfg,
-		SystemInstruction: systemInstruction,
-		Logger:            logger,
+		Runner:         r,
+		SessionManager: sm,
+		Interrupts:     NewInterruptStore(),
+		Config:         cfg,
+		Logger:         logger,
 	}, nil
-}
-
-func buildToolDeclarations(tools []tool.Tool) []*genai.Tool {
-	var decls []*genai.FunctionDeclaration
-	for _, t := range tools {
-		type declarator interface {
-			Declaration() *genai.FunctionDeclaration
-		}
-		if d, ok := t.(declarator); ok {
-			if decl := d.Declaration(); decl != nil {
-				decls = append(decls, decl)
-			}
-		}
-	}
-	if len(decls) == 0 {
-		return nil
-	}
-	return []*genai.Tool{{FunctionDeclarations: decls}}
 }
