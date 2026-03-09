@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"agentic/internal/agent"
@@ -16,15 +17,21 @@ import (
 
 func Chat(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, `{"error": "failed to read request body"}`, http.StatusBadRequest)
+			return
+		}
+
 		var req types.ChatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(rawBody, &req); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error": "invalid request: %s"}`, err), http.StatusBadRequest)
 			return
 		}
 
-		// Model-based routing: agent mode vs proxy
+		// Model-based routing: agent mode vs proxy pass-through
 		if req.Model != core.Config.AgentModelName {
-			proxy.Forward(w, r, core.Config.LLMBaseURL, core.Config.LLMAPIKey, req)
+			proxy.Forward(w, core.Config.LLMBaseURL, core.Config.LLMAPIKey, rawBody)
 			return
 		}
 
@@ -34,14 +41,12 @@ func Chat(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 			threadID = fmt.Sprintf("anon-%s", uuid.New().String()[:12])
 		}
 
-		// Ensure session exists
 		if err := core.SessionManager.GetOrCreate(r.Context(), threadID); err != nil {
 			logger.Error().Err(err).Str("thread_id", threadID).Msg("failed to create session")
 			http.Error(w, `{"error": "failed to create session"}`, http.StatusInternalServerError)
 			return
 		}
 
-		// Convert last user message to genai.Content
 		var userMsg *genai.Content
 		for i := len(req.Messages) - 1; i >= 0; i-- {
 			if req.Messages[i].Role == "user" {

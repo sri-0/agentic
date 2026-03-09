@@ -14,11 +14,15 @@ import (
 	"agentic/internal/server"
 	"agentic/internal/tools"
 
+	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
 )
 
 func main() {
 	ctx := context.Background()
+
+	// Load .env file if present
+	_ = godotenv.Load()
 
 	// Load configuration
 	cfg, err := config.Load(ctx)
