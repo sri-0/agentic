@@ -10,6 +10,7 @@ providers:
     models:
       # ── OpenAI ──────────────────────────────────────────────────────────
       - id: openai/gpt-4o
+        type: llm
         name: GPT-4o
         owned_by: openai
         description: Most capable GPT-4 model with vision and tool calling.
@@ -23,6 +24,7 @@ providers:
           instruct_type: none
 
       - id: openai/gpt-4o-mini
+        type: llm
         name: GPT-4o Mini
         owned_by: openai
         description: Small, fast, and affordable GPT-4o variant.
@@ -36,6 +38,7 @@ providers:
           instruct_type: none
 
       - id: openai/gpt-4.1
+        type: llm
         name: GPT-4.1
         owned_by: openai
         description: Latest GPT-4.1 flagship model with improved coding and instruction following.
@@ -49,6 +52,7 @@ providers:
           instruct_type: none
 
       - id: openai/gpt-4.1-mini
+        type: llm
         name: GPT-4.1 Mini
         owned_by: openai
         description: Fast and affordable GPT-4.1 variant.
@@ -62,6 +66,7 @@ providers:
           instruct_type: none
 
       - id: openai/gpt-4.1-nano
+        type: llm
         name: GPT-4.1 Nano
         owned_by: openai
         description: Smallest and fastest GPT-4.1 model.
@@ -75,6 +80,7 @@ providers:
           instruct_type: none
 
       - id: openai/o1
+        type: llm
         name: o1
         owned_by: openai
         description: Reasoning model for complex problem solving.
@@ -89,6 +95,7 @@ providers:
           instruct_type: none
 
       - id: openai/o1-mini
+        type: llm
         name: o1 Mini
         owned_by: openai
         description: Fast reasoning model for STEM tasks.
@@ -103,6 +110,7 @@ providers:
           instruct_type: none
 
       - id: openai/o1-pro
+        type: llm
         name: o1 Pro
         owned_by: openai
         description: Enhanced o1 with more compute for hard problems.
@@ -117,6 +125,7 @@ providers:
           instruct_type: none
 
       - id: openai/o3
+        type: llm
         name: o3
         owned_by: openai
         description: Most capable reasoning model.
@@ -131,6 +140,7 @@ providers:
           instruct_type: none
 
       - id: openai/o3-mini
+        type: llm
         name: o3 Mini
         owned_by: openai
         description: Fast and affordable reasoning model.
@@ -145,6 +155,7 @@ providers:
           instruct_type: none
 
       - id: openai/o4-mini
+        type: llm
         name: o4 Mini
         owned_by: openai
         description: Latest compact reasoning model.
@@ -160,6 +171,7 @@ providers:
 
       # ── Anthropic ───────────────────────────────────────────────────────
       - id: anthropic/claude-sonnet-4
+        type: llm
         name: Claude Sonnet 4
         owned_by: anthropic
         description: Balanced performance and speed from Anthropic.
@@ -173,6 +185,7 @@ providers:
           instruct_type: none
 
       - id: anthropic/claude-opus-4
+        type: llm
         name: Claude Opus 4
         owned_by: anthropic
         description: Most capable Claude model for complex tasks.
@@ -186,6 +199,7 @@ providers:
           instruct_type: none
 
       - id: anthropic/claude-3.5-sonnet
+        type: llm
         name: Claude 3.5 Sonnet
         owned_by: anthropic
         description: High performance Claude 3.5 model.
@@ -199,6 +213,7 @@ providers:
           instruct_type: none
 
       - id: anthropic/claude-3.5-haiku
+        type: llm
         name: Claude 3.5 Haiku
         owned_by: anthropic
         description: Fast and affordable Claude model.
@@ -213,6 +228,7 @@ providers:
 
       # ── Google ──────────────────────────────────────────────────────────
       - id: google/gemini-2.5-pro-preview
+        type: llm
         name: Gemini 2.5 Pro
         owned_by: google
         description: Google's most capable model with thinking.
@@ -226,6 +242,7 @@ providers:
           instruct_type: none
 
       - id: google/gemini-2.5-flash-preview
+        type: llm
         name: Gemini 2.5 Flash
         owned_by: google
         description: Fast Gemini model with thinking capabilities.
@@ -239,6 +256,7 @@ providers:
           instruct_type: none
 
       - id: google/gemini-2.0-flash-001
+        type: llm
         name: Gemini 2.0 Flash
         owned_by: google
         description: Fast and efficient Gemini model.
@@ -252,6 +270,7 @@ providers:
           instruct_type: none
 
       - id: google/gemini-2.0-flash-lite-001
+        type: llm
         name: Gemini 2.0 Flash Lite
         owned_by: google
         description: Lightest Gemini model for high-throughput tasks.
@@ -266,6 +285,7 @@ providers:
 
       # ── Meta Llama ──────────────────────────────────────────────────────
       - id: meta-llama/llama-4-maverick
+        type: llm
         name: Llama 4 Maverick
         owned_by: meta
         description: Llama 4 flagship MoE model.
@@ -279,6 +299,7 @@ providers:
           instruct_type: llama4
 
       - id: meta-llama/llama-4-scout
+        type: llm
         name: Llama 4 Scout
         owned_by: meta
         description: Efficient Llama 4 MoE model with 10M context.
@@ -292,6 +313,7 @@ providers:
           instruct_type: llama4
 
       - id: meta-llama/llama-3.3-70b-instruct
+        type: llm
         name: Llama 3.3 70B
         owned_by: meta
         description: Strong open-weight model for general tasks.
@@ -305,6 +327,7 @@ providers:
           instruct_type: llama3
 
       - id: meta-llama/llama-3.1-405b-instruct
+        type: llm
         name: Llama 3.1 405B
         owned_by: meta
         description: Largest open-weight Llama model.
@@ -318,6 +341,7 @@ providers:
           instruct_type: llama3
 
       - id: meta-llama/llama-3.1-70b-instruct
+        type: llm
         name: Llama 3.1 70B
         owned_by: meta
         description: Balanced Llama 3.1 model.
@@ -331,6 +355,7 @@ providers:
           instruct_type: llama3
 
       - id: meta-llama/llama-3.1-8b-instruct
+        type: llm
         name: Llama 3.1 8B
         owned_by: meta
         description: Small and fast Llama model.
@@ -345,6 +370,7 @@ providers:
 
       # ── DeepSeek ────────────────────────────────────────────────────────
       - id: deepseek/deepseek-r1
+        type: llm
         name: DeepSeek R1
         owned_by: deepseek
         description: Open reasoning model competitive with o1.
@@ -358,6 +384,7 @@ providers:
           instruct_type: deepseek
 
       - id: deepseek/deepseek-chat-v3-0324
+        type: llm
         name: DeepSeek V3 0324
         owned_by: deepseek
         description: Strong general-purpose chat model.
@@ -371,6 +398,7 @@ providers:
           instruct_type: deepseek
 
       - id: deepseek/deepseek-r1-0528
+        type: llm
         name: DeepSeek R1 0528
         owned_by: deepseek
         description: Updated reasoning model with improved performance.
@@ -385,6 +413,7 @@ providers:
 
       # ── Qwen ────────────────────────────────────────────────────────────
       - id: qwen/qwen-2.5-72b-instruct
+        type: llm
         name: Qwen 2.5 72B
         owned_by: qwen
         description: Large Qwen model for complex tasks.
@@ -398,6 +427,7 @@ providers:
           instruct_type: chatml
 
       - id: qwen/qwen-2.5-coder-32b-instruct
+        type: llm
         name: Qwen 2.5 Coder 32B
         owned_by: qwen
         description: Specialized coding model.
@@ -411,6 +441,7 @@ providers:
           instruct_type: chatml
 
       - id: qwen/qwen3-235b-a22b
+        type: llm
         name: Qwen3 235B
         owned_by: qwen
         description: Largest Qwen3 MoE model with thinking.
@@ -424,6 +455,7 @@ providers:
           instruct_type: chatml
 
       - id: qwen/qwen3-30b-a3b
+        type: llm
         name: Qwen3 30B
         owned_by: qwen
         description: Efficient Qwen3 MoE model.
@@ -438,6 +470,7 @@ providers:
 
       # ── Mistral ─────────────────────────────────────────────────────────
       - id: mistralai/mistral-large-2411
+        type: llm
         name: Mistral Large
         owned_by: mistral
         description: Mistral's flagship model.
@@ -451,6 +484,7 @@ providers:
           instruct_type: mistral
 
       - id: mistralai/mistral-small-3.1-24b-instruct
+        type: llm
         name: Mistral Small 3.1
         owned_by: mistral
         description: Fast and efficient Mistral model with vision.
@@ -464,6 +498,7 @@ providers:
           instruct_type: mistral
 
       - id: mistralai/codestral-2501
+        type: llm
         name: Codestral
         owned_by: mistral
         description: Specialized coding model from Mistral.
@@ -478,6 +513,7 @@ providers:
 
       # ── Cohere ──────────────────────────────────────────────────────────
       - id: cohere/command-r-plus
+        type: llm
         name: Command R+
         owned_by: cohere
         description: Cohere's most capable model for RAG and enterprise.
@@ -491,6 +527,7 @@ providers:
           instruct_type: cohere
 
       - id: cohere/command-r
+        type: llm
         name: Command R
         owned_by: cohere
         description: Balanced Cohere model for RAG.
@@ -504,6 +541,7 @@ providers:
           instruct_type: cohere
 
       - id: cohere/command-a
+        type: llm
         name: Command A
         owned_by: cohere
         description: Latest Cohere flagship model.
@@ -518,6 +556,7 @@ providers:
 
       # ── xAI ─────────────────────────────────────────────────────────────
       - id: x-ai/grok-3-beta
+        type: llm
         name: Grok 3 Beta
         owned_by: xai
         description: xAI's most capable model.
@@ -531,6 +570,7 @@ providers:
           instruct_type: none
 
       - id: x-ai/grok-3-mini-beta
+        type: llm
         name: Grok 3 Mini Beta
         owned_by: xai
         description: Fast reasoning model from xAI.
@@ -544,6 +584,7 @@ providers:
           instruct_type: none
 
       - id: x-ai/grok-2-1212
+        type: llm
         name: Grok 2
         owned_by: xai
         description: Previous generation Grok model.
@@ -558,6 +599,7 @@ providers:
 
       # ── Amazon ──────────────────────────────────────────────────────────
       - id: amazon/nova-pro-v1
+        type: llm
         name: Nova Pro
         owned_by: amazon
         description: Amazon's capable multimodal model.
@@ -571,6 +613,7 @@ providers:
           instruct_type: none
 
       - id: amazon/nova-lite-v1
+        type: llm
         name: Nova Lite
         owned_by: amazon
         description: Fast and affordable Amazon model.
@@ -585,6 +628,7 @@ providers:
 
       # ── Microsoft ───────────────────────────────────────────────────────
       - id: microsoft/phi-4
+        type: llm
         name: Phi-4
         owned_by: microsoft
         description: Compact model excelling at reasoning and STEM.
@@ -598,6 +642,7 @@ providers:
           instruct_type: chatml
 
       - id: microsoft/mai-ds-r1
+        type: llm
         name: MAI DS R1
         owned_by: microsoft
         description: Microsoft's distilled reasoning model based on DeepSeek R1.
@@ -609,3 +654,37 @@ providers:
           output_modalities: [text]
           tokenizer: deepseek
           instruct_type: deepseek
+
+      # ── Embedding Models ──────────────────────────────────────────────
+      - id: openai/text-embedding-3-large
+        type: embedding
+        name: Text Embedding 3 Large
+        owned_by: openai
+        description: Most capable OpenAI embedding model. 3072 dimensions.
+        created: 2024-01-25
+        context_length: 8191
+        architecture:
+          input_modalities: [text]
+          output_modalities: [embedding]
+
+      - id: openai/text-embedding-3-small
+        type: embedding
+        name: Text Embedding 3 Small
+        owned_by: openai
+        description: Fast and affordable embedding model. 1536 dimensions.
+        created: 2024-01-25
+        context_length: 8191
+        architecture:
+          input_modalities: [text]
+          output_modalities: [embedding]
+
+      - id: openai/text-embedding-ada-002
+        type: embedding
+        name: Text Embedding Ada 002
+        owned_by: openai
+        description: Previous generation embedding model. 1536 dimensions.
+        created: 2022-12-15
+        context_length: 8191
+        architecture:
+          input_modalities: [text]
+          output_modalities: [embedding]

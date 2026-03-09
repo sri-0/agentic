@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"agentic/internal/agent"
+	"agentic/internal/config"
 	"agentic/internal/proxy"
 
 	"github.com/rs/zerolog"
@@ -20,13 +21,20 @@ func Embeddings(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 			return
 		}
 
-		// Extract model from request to find the right provider
 		var req struct {
 			Model string `json:"model"`
 		}
 		if err := json.Unmarshal(rawBody, &req); err != nil || req.Model == "" {
 			http.Error(w, `{"error": "invalid request: model is required"}`, http.StatusBadRequest)
 			return
+		}
+
+		// Validate model type
+		if core.Config.Models != nil {
+			if m := core.Config.Models.FindModel(req.Model); m != nil && m.Type != config.ModelTypeEmbedding {
+				http.Error(w, fmt.Sprintf(`{"error": "model %s is of type %s, not embedding"}`, req.Model, m.Type), http.StatusBadRequest)
+				return
+			}
 		}
 
 		baseURL, apiKey, client := agent.ProxyProvider(core.Config, req.Model)

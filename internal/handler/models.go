@@ -57,6 +57,7 @@ func buildModelEntry(m config.Model, fallbackCreated int64) map[string]any {
 	entry := map[string]any{
 		"id":                   m.ID,
 		"object":               "model",
+		"type":                 string(m.Type),
 		"created":              created,
 		"owned_by":             m.OwnedBy,
 		"supported_parameters": m.EffectiveSupportedParameters(),

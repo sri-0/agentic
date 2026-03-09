@@ -91,9 +91,19 @@ var DefaultSupportedParameters = []string{
 	"top_k", "reasoning_effort",
 }
 
+// ModelType distinguishes model categories.
+type ModelType string
+
+const (
+	ModelTypeLLM       ModelType = "llm"
+	ModelTypeEmbedding ModelType = "embedding"
+	ModelTypeVision    ModelType = "vision"
+)
+
 type Model struct {
 	ID                  string        `yaml:"id"       json:"id"`
 	Name                string        `yaml:"name"     json:"name"`
+	Type                ModelType     `yaml:"type"     json:"type"`
 	OwnedBy             string        `yaml:"owned_by" json:"owned_by"`
 	Description         string        `yaml:"description,omitempty" json:"description,omitempty"`
 	Created             string        `yaml:"created,omitempty" json:"-"`
@@ -215,6 +225,18 @@ func (c *ModelsConfig) FindProviderForModel(modelID string) *Provider {
 		for _, m := range c.Providers[i].Models {
 			if m.ID == modelID {
 				return &c.Providers[i]
+			}
+		}
+	}
+	return nil
+}
+
+// FindModel returns the model config for the given model ID, or nil if not found.
+func (c *ModelsConfig) FindModel(modelID string) *Model {
+	for i := range c.Providers {
+		for j := range c.Providers[i].Models {
+			if c.Providers[i].Models[j].ID == modelID {
+				return &c.Providers[i].Models[j]
 			}
 		}
 	}

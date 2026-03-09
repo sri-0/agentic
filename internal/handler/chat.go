@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"agentic/internal/agent"
+	"agentic/internal/config"
 	"agentic/internal/proxy"
 	"agentic/internal/types"
 
@@ -28,7 +29,15 @@ func Chat(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 			return
 		}
 
-		// Route: agent mode vs proxy mode
+		// Reject models that arent LLMs
+		if core.Config.Models != nil {
+			if m := core.Config.Models.FindModel(req.Model); m != nil && m.Type != config.ModelTypeLLM {
+				http.Error(w, fmt.Sprintf(`{"error": "model %s is of type %s, not LLM"}`, req.Model, m.Type), http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Route the request depending on if this is agent mode or chat mode
 		if !agent.IsAgentModel(core.Config, req.Model) {
 			baseURL, apiKey, client := agent.ProxyProvider(core.Config, req.Model)
 			proxy.ForwardTo(w, baseURL, apiKey, "/chat/completions", rawBody, client)
