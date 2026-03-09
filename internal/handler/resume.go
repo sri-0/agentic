@@ -50,7 +50,7 @@ func Resume(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 
 		// Emit synthetic tool-call announcement so the UI shows "Running..."
 		requestID := fmt.Sprintf("chatcmpl-resume-%s", req.ThreadID[:12])
-		cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName)
+		cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName, req.ThreadID)
 
 		argsJSON, _ := json.Marshal(pending.Details)
 		sse.WriteSSE(w, cb.ToolCallDelta(0, pending.ToolCallID, pending.ToolName, string(argsJSON)))

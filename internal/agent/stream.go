@@ -29,7 +29,7 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
-	cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName)
+	cb := sse.NewChunkBuilder(requestID, core.Config.AgentModelName, threadID)
 
 	// Inject threadID into context for tool handlers
 	ctx = context.WithValue(ctx, ThreadIDKey, threadID)
