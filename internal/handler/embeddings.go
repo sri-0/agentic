@@ -13,7 +13,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func Embeddings(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
+func Embeddings(cfg *config.Config, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -30,14 +30,14 @@ func Embeddings(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 		}
 
 		// Validate model type
-		if core.Config.Models != nil {
-			if m := core.Config.Models.FindModel(req.Model); m != nil && m.Type != config.ModelTypeEmbedding {
+		if cfg.Models != nil {
+			if m := cfg.Models.FindModel(req.Model); m != nil && m.Type != config.ModelTypeEmbedding {
 				http.Error(w, fmt.Sprintf(`{"error": "model %s is of type %s, not embedding"}`, req.Model, m.Type), http.StatusBadRequest)
 				return
 			}
 		}
 
-		baseURL, apiKey, client := agent.ProxyProvider(core.Config, req.Model)
+		baseURL, apiKey, client := agent.ProxyProvider(cfg, req.Model)
 		if baseURL == "" {
 			http.Error(w, fmt.Sprintf(`{"error": "unknown model: %s"}`, req.Model), http.StatusBadRequest)
 			return

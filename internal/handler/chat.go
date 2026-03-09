@@ -15,7 +15,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func Chat(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
+func Chat(registry *agent.Registry, cfg *config.Config, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -30,16 +30,18 @@ func Chat(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 		}
 
 		// Reject models that arent LLMs
-		if core.Config.Models != nil {
-			if m := core.Config.Models.FindModel(req.Model); m != nil && m.Type != config.ModelTypeLLM {
+		if cfg.Models != nil {
+			if m := cfg.Models.FindModel(req.Model); m != nil && m.Type != config.ModelTypeLLM {
 				http.Error(w, fmt.Sprintf(`{"error": "model %s is of type %s, not LLM"}`, req.Model, m.Type), http.StatusBadRequest)
 				return
 			}
 		}
 
-		// Route the request depending on if this is agent mode or chat mode
-		if !agent.IsAgentModel(core.Config, req.Model) {
-			baseURL, apiKey, client := agent.ProxyProvider(core.Config, req.Model)
+		// Try to find an agent core for this model
+		core := registry.Get(req.Model)
+		if core == nil {
+			// Not an agent model — proxy it
+			baseURL, apiKey, client := agent.ProxyProvider(cfg, req.Model)
 			proxy.ForwardTo(w, baseURL, apiKey, "/chat/completions", rawBody, client)
 			return
 		}
@@ -54,7 +56,7 @@ func Chat(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 			return
 		}
 
-		logger.Info().Str("thread_id", threadID).Int("messages", len(req.Messages)).Msg("agent chat")
+		logger.Info().Str("thread_id", threadID).Str("agent", core.AgentID).Int("messages", len(req.Messages)).Msg("agent chat")
 		agent.StreamAgentRun(r.Context(), w, core, threadID, req.Messages, logger)
 	}
 }

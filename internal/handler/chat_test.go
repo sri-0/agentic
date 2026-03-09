@@ -55,6 +55,13 @@ func newTestCore(t *testing.T, customAgent adkagent.Agent) *agent.Core {
 	}
 }
 
+func newTestRegistry(t *testing.T, core *agent.Core) *agent.Registry {
+	t.Helper()
+	reg := agent.NewRegistry()
+	reg.Register("test-agent", core)
+	return reg
+}
+
 func makeTextAgent(t *testing.T) adkagent.Agent {
 	t.Helper()
 	a, err := adkagent.New(adkagent.Config{
@@ -96,7 +103,8 @@ func makeTextAgent(t *testing.T) adkagent.Agent {
 
 func TestChatHandler_AgentMode_StreamsSSE(t *testing.T) {
 	core := newTestCore(t, makeTextAgent(t))
-	handler := Chat(core, zerolog.Nop())
+	reg := newTestRegistry(t, core)
+	handler := Chat(reg, core.Config, zerolog.Nop())
 
 	body := `{"model":"test-agent","messages":[{"role":"user","content":"hi"}],"stream":true,"thread_id":"t1"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
@@ -167,7 +175,8 @@ func TestChatHandler_ProxyMode(t *testing.T) {
 		}},
 	}
 
-	handler := Chat(core, zerolog.Nop())
+	reg := newTestRegistry(t, core)
+	handler := Chat(reg, core.Config, zerolog.Nop())
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
@@ -189,7 +198,8 @@ func TestChatHandler_ProxyMode(t *testing.T) {
 
 func TestChatHandler_RejectsEmptyMessages(t *testing.T) {
 	core := newTestCore(t, makeTextAgent(t))
-	handler := Chat(core, zerolog.Nop())
+	reg := newTestRegistry(t, core)
+	handler := Chat(reg, core.Config, zerolog.Nop())
 
 	body := `{"model":"test-agent","messages":[]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
@@ -225,6 +235,7 @@ func TestResumeHandler(t *testing.T) {
 	}
 
 	core := newTestCore(t, resumeAgent)
+	reg := newTestRegistry(t, core)
 
 	// Pre-create session
 	if err := core.SessionManager.GetOrCreate(context.Background(), "thread-resume"); err != nil {
@@ -240,7 +251,7 @@ func TestResumeHandler(t *testing.T) {
 		Details:            map[string]any{"table": "users"},
 	})
 
-	handler := Resume(core, zerolog.Nop())
+	handler := Resume(reg, zerolog.Nop())
 
 	body := `{"thread_id":"thread-resume","action":"approved"}`
 	req := httptest.NewRequest("POST", "/v1/agent/resume", bytes.NewBufferString(body))
@@ -273,7 +284,8 @@ func TestResumeHandler(t *testing.T) {
 
 func TestResumeHandler_NoPending(t *testing.T) {
 	core := newTestCore(t, makeTextAgent(t))
-	handler := Resume(core, zerolog.Nop())
+	reg := newTestRegistry(t, core)
+	handler := Resume(reg, zerolog.Nop())
 
 	body := `{"thread_id":"nonexistent","action":"approved"}`
 	req := httptest.NewRequest("POST", "/v1/agent/resume", bytes.NewBufferString(body))

@@ -18,7 +18,7 @@ import (
 
 // Messages handles Anthropic-style /v1/messages requests by converting them
 // to OpenAI format, proxying upstream, and converting the response back.
-func Messages(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
+func Messages(cfg *config.Config, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -38,21 +38,21 @@ func Messages(core *agent.Core, logger zerolog.Logger) http.HandlerFunc {
 		}
 
 		// Validate model type
-		if core.Config.Models != nil {
-			if m := core.Config.Models.FindModel(req.Model); m != nil && m.Type == config.ModelTypeEmbedding {
+		if cfg.Models != nil {
+			if m := cfg.Models.FindModel(req.Model); m != nil && m.Type == config.ModelTypeEmbedding {
 				writeAnthropicError(w, http.StatusBadRequest, fmt.Sprintf("model %s is an embedding model", req.Model))
 				return
 			}
 		}
 
 		// Resolve upstream provider
-		baseURL, apiKey, client := agent.ProxyProvider(core.Config, req.Model)
+		baseURL, apiKey, client := agent.ProxyProvider(cfg, req.Model)
 		if baseURL == "" {
 			writeAnthropicError(w, http.StatusBadRequest, fmt.Sprintf("unknown model: %s", req.Model))
 			return
 		}
 
-		// Convert Anthropic request → OpenAI request
+		// Convert Anthropic request -> OpenAI request
 		openaiBody, err := anth.ToOpenAIRequest(&req)
 		if err != nil {
 			writeAnthropicError(w, http.StatusBadRequest, fmt.Sprintf("conversion error: %s", err))

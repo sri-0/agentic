@@ -10,29 +10,39 @@ import (
 	"syscall"
 	"time"
 
+	"agentic/agents/basic"
+	"agentic/agents/deepresearch"
+	"agentic/agents/triage"
 	"agentic/internal/agent"
 	"agentic/internal/config"
+	"agentic/internal/rag"
 	"agentic/internal/server"
-	"agentic/internal/tools"
+
+	adkagent "google.golang.org/adk/agent"
 
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
 )
 
+type agentBuilder func(*config.Config, *config.AgentConfig, *rag.Client) (adkagent.Agent, error)
+
+var builders = map[string]agentBuilder{
+	"basic":         basic.NewAgent,
+	"deep-research": deepresearch.NewAgent,
+	"triage":        triage.NewAgent,
+}
+
 func main() {
 	ctx := context.Background()
 
-	// Load .env file if present
 	_ = godotenv.Load()
 
-	// Load configuration
 	cfg, err := config.Load(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Init logger
 	var logger zerolog.Logger
 	if cfg.LogJSON {
 		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
@@ -46,7 +56,6 @@ func main() {
 		logger = logger.Level(level)
 	}
 
-	// Load YAML configs from CONFIG_DIR
 	configDir := cfg.ConfigDir
 	logger.Info().Str("config_dir", configDir).Msg("loading config files")
 
@@ -67,42 +76,61 @@ func main() {
 	cfg.Agents = agentsCfg
 	logger.Info().Strs("agents", agentsCfg.AgentIDs()).Msg("agents config loaded")
 
-	// Use the first agent defined in agents.yaml
-	agentCfg := &agentsCfg.Agents[0]
+	ragClient := rag.NewClient()
+	registry := agent.NewRegistry()
 
-	logger.Info().
-		Str("agent", agentCfg.ID).
-		Str("model", agentCfg.Model).
-		Str("provider", agentCfg.Provider).
-		Msg("starting server")
+	for i := range agentsCfg.Agents {
+		agentCfg := &agentsCfg.Agents[i]
+		agentType := agentCfg.Type
+		if agentType == "" {
+			agentType = "basic"
+		}
 
-	// Create tools (ADK handles HITL via RequireConfirmation)
-	allTools, err := tools.NewAllTools()
-	if err != nil {
-		logger.Fatal().Err(err).Msg("failed to create tools")
+		build, ok := builders[agentType]
+		if !ok {
+			logger.Error().Str("agent", agentCfg.ID).Str("type", agentType).Msg("unknown agent type, skipping")
+			continue
+		}
+
+		rootAgent, buildErr := build(cfg, agentCfg, ragClient)
+		if buildErr != nil {
+			logger.Error().Err(buildErr).Str("agent", agentCfg.ID).Msg("failed to build agent, skipping")
+			continue
+		}
+
+		core, coreErr := agent.NewCoreWithAgent(cfg, agentCfg, rootAgent, logger)
+		if coreErr != nil {
+			logger.Error().Err(coreErr).Str("agent", agentCfg.ID).Msg("failed to create agent core, skipping")
+			continue
+		}
+
+		// Set OutputAgent to the last sub-agent (the one whose text goes to choices[0].delta.content).
+		// For flat agents (no sub-agents), leave empty so all text goes to content.
+		if len(agentCfg.SubAgents) > 0 {
+			core.OutputAgent = agentCfg.SubAgents[len(agentCfg.SubAgents)-1].Name
+		}
+
+		registry.Register(agentCfg.ID, core)
+		logger.Info().Str("agent", agentCfg.ID).Str("type", agentType).Msg("agent loaded")
 	}
-	logger.Info().Strs("tools", tools.ToolNames()).Msg("tools loaded")
 
-	// Create agent core with ADK runner + session management
-	core, err := agent.NewCore(cfg, agentCfg, allTools, logger)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("failed to create agent core")
+	if len(registry.IDs()) == 0 {
+		logger.Fatal().Msg("no agents loaded successfully")
 	}
 
-	// Build router
-	router := server.NewRouter(core, logger)
+	logger.Info().Strs("agents", registry.IDs()).Msg("agent registry ready")
 
-	// Start server
+	router := server.NewRouter(registry, cfg, logger)
+
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      router,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 5 * time.Minute, // long timeout for SSE streams
+		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

@@ -1,6 +1,7 @@
 agents:
-  - id: test-agent
-    name: agentic
+  - id: basic-agent
+    type: basic
+    name: basic_agent
     description: AI assistant with database, search, and calculation tools
     model: openai/gpt-4o-mini
     provider: openrouter
@@ -21,3 +22,153 @@ agents:
       - retrieve_documents
       - web_search
       - calculate
+
+  - id: deep-research
+    type: deep-research
+    name: deep_research_pipeline
+    description: Deep research agent with per-document analysis and citation
+    sub_agents:
+      - name: document_analyst
+        description: Analyzes a single document and extracts key findings with citations
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: analysis_findings
+        system_prompt: |
+          You are a research analyst. Analyze the following document thoroughly.
+          Extract key claims, data points, and insights. Preserve the document metadata for citation.
+          Be specific and reference exact figures or statements from the document.
+
+          {current_document}
+
+      - name: data_analyst
+        description: Queries databases for supporting quantitative data related to the document
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: database_results
+        system_prompt: |
+          You are a data analyst. Based on the document below, query for relevant quantitative data
+          and metrics that support or contextualize the document's claims.
+
+          {current_document}
+        tools:
+          - query_research_db
+          - query_metrics_db
+
+      - name: findings_summarizer
+        description: Summarizes the key findings for a single document
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: current_findings
+        system_prompt: |
+          You are a research summarizer. Combine the document analysis and supporting data
+          into a concise summary of key findings for this document. Include citations to the
+          original document metadata.
+
+          Document Analysis:
+          {analysis_findings}
+
+          Supporting Data:
+          {database_results}
+
+      - name: report_generator
+        description: Produces the final combined research report from all document findings
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: final_report
+        system_prompt: |
+          You are a report writer. Synthesize all per-document findings below into a comprehensive,
+          well-cited research report. Deduplicate overlapping insights, identify cross-document themes,
+          and produce a clear executive summary followed by detailed sections.
+
+          Every claim must reference its source document. Structure the report with:
+          1. Executive Summary
+          2. Key Findings (grouped by theme)
+          3. Supporting Data
+          4. Sources and Citations
+
+          Accumulated findings from all documents:
+          {all_findings}
+
+  - id: triage-agent
+    type: triage
+    name: triage_pipeline
+    description: Incident triage and escalation agent
+    sub_agents:
+      - name: issue_extractor
+        description: Extracts structured issue details from the incident report
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: extracted_issue
+        system_prompt: |
+          You are an incident issue extractor. Parse the incident report and extract:
+          - Summary of the issue
+          - Affected systems/services
+          - Timeline of events
+          - Reported severity
+          - Any error codes or identifiers
+
+          Provide a structured extraction of the key details.
+
+      - name: keyword_analyst
+        description: Analyzes incidents for keyword matches and topic relevance
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: keyword_analysis
+        system_prompt: |
+          You are a keyword and topic analyst. Analyze the extracted issue to determine
+          if it matches known critical topics or keywords. Use classify_incident with relevant keywords.
+
+          Issue details: {extracted_issue}
+        tools:
+          - classify_incident
+
+      - name: incident_researcher
+        description: Searches for similar past incidents and context
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: incident_research
+        system_prompt: |
+          You are an incident researcher. Search for similar past incidents and gather context.
+          Use get_incident_context and opensearch_retrieve to find related incidents.
+
+          Issue details: {extracted_issue}
+        tools:
+          - get_incident_context
+          - opensearch_retrieve
+
+      - name: severity_classifier
+        description: Classifies incident severity based on impact analysis
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: severity_classification
+        system_prompt: |
+          You are a severity classifier. Based on the extracted issue details, classify the
+          incident severity (P1-P4) considering:
+          - Scope of impact (users, systems affected)
+          - Business criticality
+          - Data loss risk
+          - Service degradation level
+
+          Use classify_incident to produce a formal classification.
+
+          Issue details: {extracted_issue}
+        tools:
+          - classify_incident
+
+      - name: report_agent
+        description: Produces triage summary and triggers alerts if needed
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: triage_report
+        system_prompt: |
+          You are a triage report agent. Synthesize all assessment results into a triage report
+          and determine whether to escalate.
+
+          Keyword analysis: {keyword_analysis}
+          Past incidents: {incident_research}
+          Severity classification: {severity_classification}
+
+          If severity is P1 or P2, use trigger_alert to escalate immediately.
+          Produce a clear triage summary with your recommendation.
+        tools:
+          - trigger_alert

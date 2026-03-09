@@ -8,6 +8,7 @@ import (
 
 	genaiopenai "github.com/achetronic/adk-utils-go/genai/openai"
 	"github.com/rs/zerolog"
+	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
@@ -64,6 +65,7 @@ type Core struct {
 	SessionManager *SessionManager
 	Interrupts     *InterruptStore
 	AgentID        string
+	OutputAgent    string // name of the agent whose output goes to choices[].delta.content
 	Config         *config.Config
 	Logger         zerolog.Logger
 }
@@ -101,6 +103,34 @@ func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool
 	}
 
 	// Pre-create a default session for startup validation
+	if err := sm.GetOrCreate(context.Background(), "default"); err != nil {
+		logger.Warn().Err(err).Msg("failed to pre-create default session")
+	}
+
+	return &Core{
+		Runner:         r,
+		SessionManager: sm,
+		Interrupts:     NewInterruptStore(),
+		AgentID:        agentCfg.ID,
+		Config:         cfg,
+		Logger:         logger,
+	}, nil
+}
+
+// NewCoreWithAgent creates a Core using a pre-built agent hierarchy (e.g. for multi-agent setups).
+func NewCoreWithAgent(cfg *config.Config, agentCfg *config.AgentConfig, rootAgent adkagent.Agent, logger zerolog.Logger) (*Core, error) {
+	sessionService := session.InMemoryService()
+	sm := NewSessionManager(sessionService, cfg.AppName, logger)
+
+	r, err := runner.New(runner.Config{
+		AppName:        cfg.AppName,
+		Agent:          rootAgent,
+		SessionService: sessionService,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	if err := sm.GetOrCreate(context.Background(), "default"); err != nil {
 		logger.Warn().Err(err).Msg("failed to pre-create default session")
 	}
