@@ -104,6 +104,12 @@ func main() {
 			continue
 		}
 
+		// Set OutputAgent to the last sub-agent (the one whose text goes to choices[0].delta.content).
+		// For flat agents (no sub-agents), leave empty so all text goes to content.
+		if len(agentCfg.SubAgents) > 0 {
+			core.OutputAgent = agentCfg.SubAgents[len(agentCfg.SubAgents)-1].Name
+		}
+
 		registry.Register(agentCfg.ID, core)
 		logger.Info().Str("agent", agentCfg.ID).Str("type", agentType).Msg("agent loaded")
 	}

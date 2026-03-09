@@ -82,9 +82,35 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 // streamEvents is the shared event processing loop for both new turns and resumes.
 // For workflow agents (Sequential/Parallel/Loop), multiple sub-agents emit events.
 // We let the runner complete rather than closing on the first IsFinalResponse().
+//
+// Agent event routing:
+//   - If core.OutputAgent is set, only that agent's text goes to choices[0].delta.content.
+//     All other agents' text is routed to custom agent_event SSE events.
+//   - If core.OutputAgent is empty (flat agent), all text goes to choices[0].delta.content.
+//   - Agent transitions emit agent_progress events (agent_start/agent_done) with step tracking.
 func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, content *genai.Content, cb *sse.ChunkBuilder, logger zerolog.Logger) {
 	toolCallIdx := int64(0)
 	hadPartialText := false
+	currentAgent := ""
+	step := 0
+
+	isOutputAgent := func(author string) bool {
+		return core.OutputAgent == "" || author == core.OutputAgent
+	}
+
+	transitionAgent := func(author string) {
+		if author == "" || author == currentAgent {
+			return
+		}
+		// Close previous agent
+		if currentAgent != "" {
+			writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", currentAgent), currentAgent, step)
+		}
+		// Start new agent
+		currentAgent = author
+		step++
+		writeAgentProgress(w, "agent_start", fmt.Sprintf("Running %s...", author), author, step)
+	}
 
 	for event, err := range core.Runner.Run(ctx, "default", threadID, content, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeSSE,
@@ -99,11 +125,18 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			continue
 		}
 
+		author := event.Author
+		transitionAgent(author)
+
 		// Partial event = streaming text token
 		if event.Partial {
 			for _, part := range event.Content.Parts {
 				if part.Text != "" {
-					sse.WriteSSE(w, cb.TextDelta(part.Text))
+					if isOutputAgent(author) {
+						sse.WriteSSE(w, cb.TextDelta(part.Text))
+					} else {
+						writeAgentEvent(w, author, "text_delta", part.Text, step)
+					}
 					hadPartialText = true
 				}
 			}
@@ -114,7 +147,16 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		for _, part := range event.Content.Parts {
 			// Text from non-streaming sub-agents or code agents (no prior partials)
 			if part.Text != "" && !hadPartialText {
-				sse.WriteSSE(w, cb.TextDelta(part.Text))
+				if isOutputAgent(author) {
+					sse.WriteSSE(w, cb.TextDelta(part.Text))
+				} else {
+					writeAgentEvent(w, author, "text_delta", part.Text, step)
+				}
+			}
+
+			// Emit text_done for intermediate agents when non-partial text arrives
+			if part.Text != "" && !isOutputAgent(author) {
+				writeAgentEvent(w, author, "text_done", "", step)
 			}
 
 			// Tool confirmation request (adk_request_confirmation)
@@ -188,6 +230,11 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		hadPartialText = false
 	}
 
+	// Close final agent
+	if currentAgent != "" {
+		writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", currentAgent), currentAgent, step)
+	}
+
 	// Stream closes when the runner completes (all workflow agents finished)
 	sse.WriteSSE(w, cb.Finish("stop"))
 	sse.WriteDone(w)
@@ -197,6 +244,24 @@ func writeProgress(w http.ResponseWriter, phase, message string) {
 	evt := types.AgentProgressEvent{}
 	evt.AgentProgress.Phase = phase
 	evt.AgentProgress.Message = message
+	sse.WriteSSE(w, evt)
+}
+
+func writeAgentProgress(w http.ResponseWriter, phase, message, agentName string, step int) {
+	evt := types.AgentProgressEvent{}
+	evt.AgentProgress.Phase = phase
+	evt.AgentProgress.Message = message
+	evt.AgentProgress.Agent = agentName
+	evt.AgentProgress.Step = step
+	sse.WriteSSE(w, evt)
+}
+
+func writeAgentEvent(w http.ResponseWriter, agentName, eventType, content string, step int) {
+	evt := types.AgentEventEvent{}
+	evt.AgentEvent.Agent = agentName
+	evt.AgentEvent.Type = eventType
+	evt.AgentEvent.Content = content
+	evt.AgentEvent.Step = step
 	sse.WriteSSE(w, evt)
 }
 

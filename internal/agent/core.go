@@ -65,6 +65,7 @@ type Core struct {
 	SessionManager *SessionManager
 	Interrupts     *InterruptStore
 	AgentID        string
+	OutputAgent    string // name of the agent whose output goes to choices[].delta.content
 	Config         *config.Config
 	Logger         zerolog.Logger
 }

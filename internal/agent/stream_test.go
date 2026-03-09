@@ -25,6 +25,11 @@ import (
 
 // newTestCore creates a Core with a custom agent for testing.
 func newTestCore(t *testing.T, customAgent adkagent.Agent) *Core {
+	return newTestCoreWithOutput(t, customAgent, "")
+}
+
+// newTestCoreWithOutput creates a Core with OutputAgent set for routing tests.
+func newTestCoreWithOutput(t *testing.T, customAgent adkagent.Agent, outputAgent string) *Core {
 	t.Helper()
 
 	sessionService := session.InMemoryService()
@@ -46,6 +51,7 @@ func newTestCore(t *testing.T, customAgent adkagent.Agent) *Core {
 		SessionManager: sm,
 		Interrupts:     NewInterruptStore(),
 		AgentID:        "test-agent",
+		OutputAgent:    outputAgent,
 		Config: &config.Config{
 			AppName: appName,
 		},
@@ -560,6 +566,196 @@ func TestMessageToContents(t *testing.T) {
 	}
 	if contents[2].Role != genai.RoleUser {
 		t.Errorf("expected user role, got %s", contents[2].Role)
+	}
+}
+
+// makeMultiAgentWorkflow creates a sequential workflow with two agents:
+// an "analyst" that emits text, then a "reporter" (output agent) that emits final text.
+func makeMultiAgentWorkflow(t *testing.T) adkagent.Agent {
+	t.Helper()
+	a, err := adkagent.New(adkagent.Config{
+		Name: "workflow_root",
+		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				// Analyst emits partial text
+				for _, text := range []string{"Analyzing ", "data..."} {
+					evt := session.NewEvent(ctx.InvocationID())
+					evt.LLMResponse = model.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{Text: text}},
+						},
+						Partial: true,
+					}
+					evt.Author = "analyst"
+					if !yield(evt, nil) {
+						return
+					}
+				}
+				// Analyst non-partial
+				evt := session.NewEvent(ctx.InvocationID())
+				evt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role:  genai.RoleModel,
+						Parts: []*genai.Part{{Text: "Analyzing data..."}},
+					},
+				}
+				evt.Author = "analyst"
+				if !yield(evt, nil) {
+					return
+				}
+
+				// Reporter (output agent) emits partial text
+				for _, text := range []string{"Final ", "report."} {
+					evt := session.NewEvent(ctx.InvocationID())
+					evt.LLMResponse = model.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{Text: text}},
+						},
+						Partial: true,
+					}
+					evt.Author = "reporter"
+					if !yield(evt, nil) {
+						return
+					}
+				}
+				// Reporter non-partial
+				evt = session.NewEvent(ctx.InvocationID())
+				evt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role:  genai.RoleModel,
+						Parts: []*genai.Part{{Text: "Final report."}},
+					},
+					TurnComplete: true,
+				}
+				evt.Author = "reporter"
+				yield(evt, nil)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestStreamAgentRun_AgentEventRouting(t *testing.T) {
+	workflow := makeMultiAgentWorkflow(t)
+	core := newTestCoreWithOutput(t, workflow, "reporter")
+
+	w := httptest.NewRecorder()
+	messages := []types.ChatMessage{{Role: "user", Content: "research something"}}
+
+	StreamAgentRun(context.Background(), w, core, "thread-routing", messages, zerolog.Nop())
+
+	events := parseSSEEvents(w.Body.String())
+
+	var contentDeltas []string   // choices[0].delta.content
+	var agentEvents []string     // agent_event text_delta content
+	var agentTextDone []string   // agent_event text_done
+	var agentStarts []string     // agent_progress agent_start
+	var agentDones []string      // agent_progress agent_done
+
+	for _, evt := range events {
+		// Check agent_event
+		if ae, ok := evt["agent_event"].(map[string]any); ok {
+			aeType := ae["type"].(string)
+			if aeType == "text_delta" {
+				agentEvents = append(agentEvents, ae["content"].(string))
+			}
+			if aeType == "text_done" {
+				agentTextDone = append(agentTextDone, ae["agent"].(string))
+			}
+			continue
+		}
+		// Check agent_progress
+		if ap, ok := evt["agent_progress"].(map[string]any); ok {
+			phase := ap["phase"].(string)
+			if phase == "agent_start" {
+				agentStarts = append(agentStarts, ap["agent"].(string))
+			}
+			if phase == "agent_done" {
+				agentDones = append(agentDones, ap["agent"].(string))
+			}
+			continue
+		}
+		// Check choices (content deltas)
+		choices, ok := evt["choices"].([]any)
+		if !ok || len(choices) == 0 {
+			continue
+		}
+		choice := choices[0].(map[string]any)
+		delta := choice["delta"].(map[string]any)
+		if content, ok := delta["content"].(string); ok && content != "" {
+			contentDeltas = append(contentDeltas, content)
+		}
+	}
+
+	// Analyst text should go to agent_event, NOT to content deltas
+	if len(agentEvents) < 2 {
+		t.Errorf("expected at least 2 agent_event text_deltas for analyst, got %d: %v", len(agentEvents), agentEvents)
+	}
+	// Reporter text should go to content deltas, NOT to agent_event
+	if len(contentDeltas) < 2 {
+		t.Errorf("expected at least 2 content deltas for reporter, got %d: %v", len(contentDeltas), contentDeltas)
+	}
+	// Analyst text_done should fire
+	if len(agentTextDone) == 0 {
+		t.Error("expected agent_event text_done for analyst")
+	}
+	// Agent lifecycle events
+	if len(agentStarts) < 2 {
+		t.Errorf("expected agent_start for both analyst and reporter, got %v", agentStarts)
+	}
+	if len(agentDones) < 2 {
+		t.Errorf("expected agent_done for both analyst and reporter, got %v", agentDones)
+	}
+	// Verify content deltas contain reporter text, not analyst text
+	combined := strings.Join(contentDeltas, "")
+	if !strings.Contains(combined, "Final") {
+		t.Errorf("expected reporter text in content deltas, got: %s", combined)
+	}
+	if strings.Contains(combined, "Analyzing") {
+		t.Error("analyst text should NOT appear in content deltas")
+	}
+}
+
+func TestStreamAgentRun_FlatAgentNoRouting(t *testing.T) {
+	// Flat agent (no OutputAgent) — all text goes to content deltas, no agent_events
+	agent := makeTextAgent(t, []string{"Hello", " world"}, "Hello world")
+	core := newTestCore(t, agent) // OutputAgent is ""
+
+	w := httptest.NewRecorder()
+	messages := []types.ChatMessage{{Role: "user", Content: "Hi"}}
+
+	StreamAgentRun(context.Background(), w, core, "thread-flat", messages, zerolog.Nop())
+
+	events := parseSSEEvents(w.Body.String())
+
+	var contentDeltas []string
+	var hasAgentEvent bool
+
+	for _, evt := range events {
+		if _, ok := evt["agent_event"]; ok {
+			hasAgentEvent = true
+		}
+		choices, ok := evt["choices"].([]any)
+		if !ok || len(choices) == 0 {
+			continue
+		}
+		choice := choices[0].(map[string]any)
+		delta := choice["delta"].(map[string]any)
+		if content, ok := delta["content"].(string); ok && content != "" {
+			contentDeltas = append(contentDeltas, content)
+		}
+	}
+
+	if hasAgentEvent {
+		t.Error("flat agent should not emit agent_event")
+	}
+	if len(contentDeltas) < 2 {
+		t.Errorf("expected text in content deltas, got %d", len(contentDeltas))
 	}
 }
 
