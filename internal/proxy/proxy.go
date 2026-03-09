@@ -8,11 +8,11 @@ import (
 	"strings"
 )
 
-// Forward proxies a raw chat completion request body to the downstream LLM.
+// ForwardTo proxies a raw request body to baseURL+path.
 // For SSE streams, it flushes each chunk as it arrives from upstream.
 // If client is nil, http.DefaultClient is used.
-func Forward(w http.ResponseWriter, baseURL, apiKey string, rawBody []byte, client *http.Client) {
-	url := strings.TrimRight(baseURL, "/") + "/chat/completions"
+func ForwardTo(w http.ResponseWriter, baseURL, apiKey, path string, rawBody []byte, client *http.Client) {
+	url := strings.TrimRight(baseURL, "/") + path
 
 	upstream, err := http.NewRequest("POST", url, bytes.NewReader(rawBody))
 	if err != nil {
