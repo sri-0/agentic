@@ -80,8 +80,11 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 }
 
 // streamEvents is the shared event processing loop for both new turns and resumes.
+// For workflow agents (Sequential/Parallel/Loop), multiple sub-agents emit events.
+// We let the runner complete rather than closing on the first IsFinalResponse().
 func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, content *genai.Content, cb *sse.ChunkBuilder, logger zerolog.Logger) {
 	toolCallIdx := int64(0)
+	hadPartialText := false
 
 	for event, err := range core.Runner.Run(ctx, "default", threadID, content, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeSSE,
@@ -101,6 +104,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			for _, part := range event.Content.Parts {
 				if part.Text != "" {
 					sse.WriteSSE(w, cb.TextDelta(part.Text))
+					hadPartialText = true
 				}
 			}
 			continue
@@ -108,10 +112,9 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 
 		// Non-partial event — process parts
 		for _, part := range event.Content.Parts {
-			// Text part
-			if part.Text != "" {
-				// Final text (already streamed via partials, but mark the turn)
-				// Don't re-emit — partials already sent the tokens
+			// Text from non-streaming sub-agents or code agents (no prior partials)
+			if part.Text != "" && !hadPartialText {
+				sse.WriteSSE(w, cb.TextDelta(part.Text))
 			}
 
 			// Tool confirmation request (adk_request_confirmation)
@@ -181,15 +184,11 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			}
 		}
 
-		// Check if this is the final response
-		if event.IsFinalResponse() {
-			sse.WriteSSE(w, cb.Finish("stop"))
-			sse.WriteDone(w)
-			return
-		}
+		// Reset partial tracking after each non-partial event
+		hadPartialText = false
 	}
 
-	// If we exit the loop without a final response, close the stream
+	// Stream closes when the runner completes (all workflow agents finished)
 	sse.WriteSSE(w, cb.Finish("stop"))
 	sse.WriteDone(w)
 }
