@@ -1,6 +1,9 @@
 package rag
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // DocumentMetadata is the configurable schema for document metadata from OpenSearch.
 type DocumentMetadata struct {
@@ -158,6 +161,29 @@ func (c *Client) GetByID(id string) (*Document, error) {
 		}
 	}
 	return nil, fmt.Errorf("document %s not found", id)
+}
+
+// Segment is a chunk of a document from the vector store.
+type Segment struct {
+	SegmentID int    `json:"segment_id"`
+	Content   string `json:"content"`
+}
+
+// GetSegments returns all segments/chunks for a document by ID.
+func (c *Client) GetSegments(docID string) ([]Segment, error) {
+	doc, err := c.GetByID(docID)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.SplitAfter(doc.Content, ".")
+	var segments []Segment
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			segments = append(segments, Segment{SegmentID: i + 1, Content: p})
+		}
+	}
+	return segments, nil
 }
 
 func matchesFilters(doc Document, filters map[string]string) bool {

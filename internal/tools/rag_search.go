@@ -38,25 +38,3 @@ func NewOpenSearchRetrieveTool(client *rag.Client) (tool.Tool, error) {
 	})
 }
 
-// ── opensearch_retrieve_by_id ──────────────────────────────────────────────
-
-type OpenSearchRetrieveByIDArgs struct {
-	DocumentID string `json:"document_id" desc:"The document ID to retrieve"`
-}
-
-func NewOpenSearchRetrieveByIDTool(client *rag.Client) (tool.Tool, error) {
-	return functiontool.New(functiontool.Config{
-		Name:        "opensearch_retrieve_by_id",
-		Description: "Retrieve a specific document by ID from OpenSearch with full metadata.",
-	}, func(_ tool.Context, args OpenSearchRetrieveByIDArgs) (rag.Document, error) {
-		doc, err := client.GetByID(args.DocumentID)
-		if err != nil {
-			return rag.Document{
-				Metadata: rag.DocumentMetadata{DocumentID: args.DocumentID},
-				Title:    "Document not found",
-				Content:  err.Error(),
-			}, nil
-		}
-		return *doc, nil
-	})
-}

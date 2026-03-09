@@ -26,72 +26,73 @@ agents:
   - id: deep-research
     type: deep-research
     name: deep_research_pipeline
-    description: Deep research agent with document analysis and citation
-    model: openai/gpt-4o
-    provider: openrouter
+    description: Deep research agent with per-document analysis and citation
     sub_agents:
-      - name: rag_retrieval_agent
-        description: Retrieves relevant documents from OpenSearch
-        model: openai/gpt-4o
-        provider: openrouter
-        output_key: retrieved_documents
-        system_prompt: |
-          You are a document retrieval specialist. Given the user's research query, use opensearch_retrieve to find relevant documents. Try multiple search variations to maximize coverage. Return all retrieved documents with their metadata.
-
-          Retrieved documents: {retrieved_documents}
-        tools:
-          - opensearch_retrieve
-          - opensearch_retrieve_by_id
-
       - name: document_analyst
-        description: Analyzes documents and extracts structured findings with citations
+        description: Analyzes a single document and extracts key findings with citations
         model: openai/gpt-4o
         provider: openrouter
         output_key: analysis_findings
         system_prompt: |
-          You are a research analyst. Analyze the retrieved documents and extract key findings.
-          Use extract_findings for each document, preserving metadata for citations.
-          Use summarize_documents for overviews.
+          You are a research analyst. Analyze the following document thoroughly.
+          Extract key claims, data points, and insights. Preserve the document metadata for citation.
+          Be specific and reference exact figures or statements from the document.
 
-          Documents to analyze: {retrieved_documents}
-        tools:
-          - summarize_documents
-          - extract_findings
+          {current_document}
 
       - name: data_analyst
-        description: Queries databases for supporting quantitative data
+        description: Queries databases for supporting quantitative data related to the document
         model: openai/gpt-4o
         provider: openrouter
         output_key: database_results
         system_prompt: |
-          You are a data analyst. Based on the research topic, query databases for relevant quantitative data and metrics that support the research.
+          You are a data analyst. Based on the document below, query for relevant quantitative data
+          and metrics that support or contextualize the document's claims.
 
-          Research context: {retrieved_documents}
+          {current_document}
         tools:
           - query_research_db
           - query_metrics_db
 
+      - name: findings_summarizer
+        description: Summarizes the key findings for a single document
+        model: openai/gpt-4o-mini
+        provider: openrouter
+        output_key: current_findings
+        system_prompt: |
+          You are a research summarizer. Combine the document analysis and supporting data
+          into a concise summary of key findings for this document. Include citations to the
+          original document metadata.
+
+          Document Analysis:
+          {analysis_findings}
+
+          Supporting Data:
+          {database_results}
+
       - name: report_generator
-        description: Produces the final cited research report
+        description: Produces the final combined research report from all document findings
         model: openai/gpt-4o
         provider: openrouter
         output_key: final_report
         system_prompt: |
-          You are a report writer. Synthesize the analysis findings and database results into a comprehensive, well-cited research report.
+          You are a report writer. Synthesize all per-document findings below into a comprehensive,
+          well-cited research report. Deduplicate overlapping insights, identify cross-document themes,
+          and produce a clear executive summary followed by detailed sections.
 
-          Analysis findings: {analysis_findings}
-          Database results: {database_results}
+          Every claim must reference its source document. Structure the report with:
+          1. Executive Summary
+          2. Key Findings (grouped by theme)
+          3. Supporting Data
+          4. Sources and Citations
 
-          Every claim must reference its source. Use generate_report to produce the final output.
-        tools:
-          - generate_report
+          Accumulated findings from all documents:
+          {all_findings}
 
   - id: triage-agent
     type: triage
     name: triage_pipeline
     description: Incident triage and escalation agent
-    model: openai/gpt-4o
-    provider: openrouter
     sub_agents:
       - name: issue_extractor
         description: Extracts structured issue details from the incident report
@@ -114,7 +115,8 @@ agents:
         provider: openrouter
         output_key: keyword_analysis
         system_prompt: |
-          You are a keyword and topic analyst. Analyze the extracted issue to determine if it matches known critical topics or keywords. Use classify_incident with relevant keywords.
+          You are a keyword and topic analyst. Analyze the extracted issue to determine
+          if it matches known critical topics or keywords. Use classify_incident with relevant keywords.
 
           Issue details: {extracted_issue}
         tools:
@@ -126,7 +128,8 @@ agents:
         provider: openrouter
         output_key: incident_research
         system_prompt: |
-          You are an incident researcher. Search for similar past incidents and gather context. Use get_incident_context and opensearch_retrieve to find related incidents.
+          You are an incident researcher. Search for similar past incidents and gather context.
+          Use get_incident_context and opensearch_retrieve to find related incidents.
 
           Issue details: {extracted_issue}
         tools:
@@ -139,7 +142,8 @@ agents:
         provider: openrouter
         output_key: severity_classification
         system_prompt: |
-          You are a severity classifier. Based on the extracted issue details, classify the incident severity (P1-P4) considering:
+          You are a severity classifier. Based on the extracted issue details, classify the
+          incident severity (P1-P4) considering:
           - Scope of impact (users, systems affected)
           - Business criticality
           - Data loss risk
@@ -157,7 +161,8 @@ agents:
         provider: openrouter
         output_key: triage_report
         system_prompt: |
-          You are a triage report agent. Synthesize all assessment results into a triage report and determine whether to escalate.
+          You are a triage report agent. Synthesize all assessment results into a triage report
+          and determine whether to escalate.
 
           Keyword analysis: {keyword_analysis}
           Past incidents: {incident_research}
