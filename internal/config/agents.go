@@ -22,6 +22,7 @@ type AgentConfig struct {
 	Tools        []string      `yaml:"tools"`
 	SubAgents    []AgentConfig `yaml:"sub_agents,omitempty"`
 	OutputKey    string        `yaml:"output_key,omitempty"`
+	OutputAgent  string        `yaml:"output_agent,omitempty"`
 	Keywords     []string      `yaml:"keywords,omitempty"`
 }
 
