@@ -91,23 +91,40 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, content *genai.Content, cb *sse.ChunkBuilder, logger zerolog.Logger) {
 	toolCallIdx := int64(0)
 	hadPartialText := false
-	currentAgent := ""
 	step := 0
+	lastAuthor := ""
+
+	// Track active agents to avoid spamming transitions for parallel agents.
+	// ParallelAgent interleaves streaming tokens between sub-agents, which
+	// would otherwise cause hundreds of agent_start/agent_done pairs.
+	activeAgents := make(map[string]bool) // agents started in current phase
+	allStarted := make(map[string]bool)   // agents ever started
 
 	isOutputAgent := func(author string) bool {
 		return core.OutputAgent == "" || author == core.OutputAgent
 	}
 
 	transitionAgent := func(author string) {
-		if author == "" || author == currentAgent {
+		if author == "" || author == lastAuthor {
 			return
 		}
-		// Close previous agent
-		if currentAgent != "" {
-			writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", currentAgent), currentAgent, step)
+		lastAuthor = author
+
+		// Already active in this phase (parallel peer returning) — skip
+		if activeAgents[author] {
+			return
 		}
-		// Start new agent
-		currentAgent = author
+
+		// Agent we've seen before in a previous phase — close current phase
+		if allStarted[author] {
+			for a := range activeAgents {
+				writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", a), a, step)
+			}
+			activeAgents = make(map[string]bool)
+		}
+
+		allStarted[author] = true
+		activeAgents[author] = true
 		step++
 		writeAgentProgress(w, "agent_start", fmt.Sprintf("Running %s...", author), author, step)
 	}
@@ -230,9 +247,9 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		hadPartialText = false
 	}
 
-	// Close final agent
-	if currentAgent != "" {
-		writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", currentAgent), currentAgent, step)
+	// Close remaining active agents
+	for a := range activeAgents {
+		writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", a), a, step)
 	}
 
 	// Stream closes when the runner completes (all workflow agents finished)
