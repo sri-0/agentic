@@ -26,18 +26,40 @@ agents:
   - id: deep-research
     type: deep-research
     name: deep_research_pipeline
-    description: Deep research agent with per-document analysis and citation
+    description: Deep research agent with planning, per-document analysis, gap detection, and iterative report refinement
+    output_agent: report_generator
     sub_agents:
+      - name: research_planner
+        description: Decomposes the research query into a structured plan with search strategies and focus areas
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: research_plan
+        system_prompt: |
+          You are a research planner. Given a research question, produce a structured plan:
+
+          1. **Search Queries**: 3-5 specific search queries to find relevant documents
+          2. **Focus Areas**: Key dimensions to analyze (e.g., financial, operational, competitive)
+          3. **Hypotheses**: Initial hypotheses to test against the evidence
+          4. **Analysis Dimensions**: What specific data points or metrics to look for
+          5. **Expected Deliverables**: What the final report should contain
+
+          Be specific and actionable. This plan guides all downstream analysis.
+
       - name: document_analyst
         description: Analyzes a single document and extracts key findings with citations
         model: openai/gpt-4o
         provider: openrouter
         output_key: analysis_findings
         system_prompt: |
-          You are a research analyst. Analyze the following document thoroughly.
+          You are a research analyst. Analyze the following document thoroughly against the research plan.
           Extract key claims, data points, and insights. Preserve the document metadata for citation.
           Be specific and reference exact figures or statements from the document.
+          Focus on the areas identified in the research plan.
 
+          Research Plan:
+          {research_plan}
+
+          Document:
           {current_document}
 
       - name: data_analyst
@@ -46,9 +68,14 @@ agents:
         provider: openrouter
         output_key: database_results
         system_prompt: |
-          You are a data analyst. Based on the document below, query for relevant quantitative data
-          and metrics that support or contextualize the document's claims.
+          You are a data analyst. Based on the document and research plan below, query for relevant
+          quantitative data and metrics that support or contextualize the document's claims.
+          Focus on the analysis dimensions from the plan.
 
+          Research Plan:
+          {research_plan}
+
+          Document:
           {current_document}
         tools:
           - query_research_db
@@ -70,24 +97,84 @@ agents:
           Supporting Data:
           {database_results}
 
-      - name: report_generator
-        description: Produces the final combined research report from all document findings
+      - name: gap_analyst
+        description: Identifies gaps between research plan and accumulated findings
         model: openai/gpt-4o
         provider: openrouter
-        output_key: final_report
+        output_key: research_gaps
         system_prompt: |
-          You are a report writer. Synthesize all per-document findings below into a comprehensive,
-          well-cited research report. Deduplicate overlapping insights, identify cross-document themes,
-          and produce a clear executive summary followed by detailed sections.
+          You are a research gap analyst. Compare the original research plan against the
+          accumulated findings from all documents. Identify:
 
-          Every claim must reference its source document. Structure the report with:
+          1. **Unanswered Questions**: Which parts of the plan lack sufficient evidence?
+          2. **Weak Evidence Areas**: Where findings are thin or inconclusive
+          3. **Missing Perspectives**: Important angles not covered by available documents
+          4. **Data Gaps**: Metrics or data points referenced but not found
+          5. **Contradictions**: Conflicting findings that need resolution
+
+          Be specific. The report writer will use this to caveat appropriately.
+
+          Research Plan:
+          {research_plan}
+
+          Accumulated Findings:
+          {all_findings}
+
+      - name: report_generator
+        description: Produces the research report, incorporating feedback on revisions
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: draft_report
+        system_prompt: |
+          You are a report writer. Synthesize all per-document findings into a comprehensive,
+          well-cited research report. Address known gaps transparently.
+
+          Structure the report with:
           1. Executive Summary
           2. Key Findings (grouped by theme)
-          3. Supporting Data
-          4. Sources and Citations
+          3. Supporting Data & Metrics
+          4. Known Gaps & Limitations
+          5. Sources and Citations
 
-          Accumulated findings from all documents:
+          Every claim must reference its source document. Where evidence is weak or missing
+          (as identified by gap analysis), state this clearly rather than speculating.
+
+          Research Plan:
+          {research_plan}
+
+          Accumulated Findings:
           {all_findings}
+
+          Research Gaps:
+          {research_gaps}
+
+          Reviewer Feedback (if revising):
+          {critic_feedback}
+
+      - name: report_critic
+        description: Reviews the draft report for quality, completeness, and accuracy
+        model: openai/gpt-4o
+        provider: openrouter
+        output_key: critic_feedback
+        system_prompt: |
+          You are a research report reviewer. Evaluate the draft report against the original
+          research plan and accumulated evidence.
+
+          Score each dimension (1-5):
+          - **Completeness**: Does it address all plan focus areas?
+          - **Accuracy**: Are claims properly supported by cited evidence?
+          - **Structure**: Is it well-organized and clear?
+          - **Citations**: Are sources properly referenced?
+          - **Gap Transparency**: Are limitations honestly disclosed?
+
+          If ALL scores are 4 or above, begin your response with "APPROVED:" followed by a brief summary.
+          Otherwise, begin with "NEEDS REVISION:" and list specific improvements needed.
+
+          Research Plan:
+          {research_plan}
+
+          Draft Report:
+          {draft_report}
 
   - id: triage-agent
     type: triage

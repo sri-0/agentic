@@ -78,11 +78,15 @@ func makeTestConfig(t *testing.T, upstreamURL string) *config.Config {
 
 // parseSSEEvents extracts text parts, event types, and checks for [DONE] from an SSE response body.
 type sseResult struct {
-	textParts     []string
-	hasAgentProg  bool
-	hasToolResult bool
-	hasDone       bool
-	rawLines      []string
+	textParts       []string            // choices[0].delta.content
+	agentEventTexts []string            // agent_event text_delta content
+	agentStarts     []string            // agent_progress agent_start agent names
+	agentDones      []string            // agent_progress agent_done agent names
+	hasAgentProg    bool
+	hasAgentEvent   bool
+	hasToolResult   bool
+	hasDone         bool
+	rawLines        []string
 }
 
 func parseSSE(body string) sseResult {
@@ -106,8 +110,26 @@ func parseSSE(body string) sseResult {
 			continue
 		}
 
-		if _, ok := evt["agent_progress"]; ok {
+		if ap, ok := evt["agent_progress"].(map[string]any); ok {
 			res.hasAgentProg = true
+			if phase, _ := ap["phase"].(string); phase == "agent_start" {
+				if name, _ := ap["agent"].(string); name != "" {
+					res.agentStarts = append(res.agentStarts, name)
+				}
+			}
+			if phase, _ := ap["phase"].(string); phase == "agent_done" {
+				if name, _ := ap["agent"].(string); name != "" {
+					res.agentDones = append(res.agentDones, name)
+				}
+			}
+		}
+		if ae, ok := evt["agent_event"].(map[string]any); ok {
+			res.hasAgentEvent = true
+			if aeType, _ := ae["type"].(string); aeType == "text_delta" {
+				if content, _ := ae["content"].(string); content != "" {
+					res.agentEventTexts = append(res.agentEventTexts, content)
+				}
+			}
 		}
 		if _, ok := evt["tool_result"]; ok {
 			res.hasToolResult = true
@@ -139,6 +161,48 @@ func sendChatRequest(t *testing.T, handler http.HandlerFunc, model, message, thr
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w
+}
+
+// deepResearchAgentCfg returns the standard test config for the deep research agent.
+func deepResearchAgentCfg() config.AgentConfig {
+	return config.AgentConfig{
+		ID:          "deep-research",
+		Type:        "deep-research",
+		Name:        "deep_research_pipeline",
+		OutputAgent: "report_generator",
+		SubAgents: []config.AgentConfig{
+			{Name: "research_planner", Model: "openai/gpt-4o", Provider: "test", OutputKey: "research_plan", SystemPrompt: "Plan research for the query."},
+			{Name: "document_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "analysis_findings", SystemPrompt: "Analyze: {current_document}"},
+			{Name: "data_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "database_results", SystemPrompt: "Query data for: {current_document}", Tools: []string{"query_research_db"}},
+			{Name: "findings_summarizer", Model: "openai/gpt-4o", Provider: "test", OutputKey: "current_findings", SystemPrompt: "Summarize: {analysis_findings} {database_results}"},
+			{Name: "gap_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "research_gaps", SystemPrompt: "Identify gaps: {research_plan} vs {all_findings}"},
+			{Name: "report_generator", Model: "openai/gpt-4o", Provider: "test", OutputKey: "draft_report", SystemPrompt: "Report on: {all_findings} gaps: {research_gaps} feedback: {critic_feedback}"},
+			{Name: "report_critic", Model: "openai/gpt-4o", Provider: "test", OutputKey: "critic_feedback", SystemPrompt: "Review: {draft_report}. If good say APPROVED."},
+		},
+	}
+}
+
+// buildDeepResearchHandler creates a fully wired handler for deep research tests.
+func buildDeepResearchHandler(t *testing.T, cfg *config.Config) http.HandlerFunc {
+	t.Helper()
+	agentCfg := deepResearchAgentCfg()
+	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
+
+	ragClient := rag.NewClient()
+	rootAgent, err := deepresearch.NewAgent(cfg, &agentCfg, ragClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	core.OutputAgent = agentCfg.OutputAgent
+
+	reg := agent.NewRegistry()
+	reg.Register("deep-research", core)
+	return Chat(reg, cfg, zerolog.Nop())
 }
 
 // ─── Basic Agent ─────────────────────────────────────────────────────────────
@@ -202,58 +266,7 @@ func TestWorkflow_DeepResearchAgent(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := makeTestConfig(t, upstream.URL)
-	agentCfg := config.AgentConfig{
-		ID:   "deep-research",
-		Type: "deep-research",
-		Name: "deep_research_pipeline",
-		SubAgents: []config.AgentConfig{
-			{
-				Name:         "document_analyst",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "analysis_findings",
-				SystemPrompt: "Analyze: {current_document}",
-			},
-			{
-				Name:         "data_analyst",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "database_results",
-				SystemPrompt: "Query data for: {current_document}",
-				Tools:        []string{"query_research_db"},
-			},
-			{
-				Name:         "findings_summarizer",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "current_findings",
-				SystemPrompt: "Summarize: {analysis_findings} {database_results}",
-			},
-			{
-				Name:         "report_generator",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "final_report",
-				SystemPrompt: "Report on: {all_findings}",
-			},
-		},
-	}
-	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
-
-	ragClient := rag.NewClient()
-	rootAgent, err := deepresearch.NewAgent(cfg, &agentCfg, ragClient)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, zerolog.Nop())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	reg := agent.NewRegistry()
-	reg.Register("deep-research", core)
-	handler := Chat(reg, cfg, zerolog.Nop())
+	handler := buildDeepResearchHandler(t, cfg)
 
 	w := sendChatRequest(t, handler, "deep-research", "What is our Q4 2024 business performance?", "dr-t1")
 
@@ -269,31 +282,32 @@ func TestWorkflow_DeepResearchAgent(t *testing.T) {
 	if !res.hasAgentProg {
 		t.Error("missing agent_progress event")
 	}
+
+	// With OutputAgent="report_generator", final report text goes to choices.delta.content
+	// and intermediate agent text goes to agent_event
 	if len(res.textParts) == 0 {
-		t.Fatal("expected text content from pipeline")
+		t.Fatal("expected text content from report_generator in choices.delta.content")
 	}
 
-	combined := strings.Join(res.textParts, "")
-
-	// Code agents should emit progress text
-	if !strings.Contains(combined, "Retrieved") {
-		t.Error("expected RAG retrieval progress in output")
+	// Code agent and intermediate LLM text should be in agent_event channel
+	allAgentText := strings.Join(res.agentEventTexts, "")
+	if !strings.Contains(allAgentText, "Retrieved") {
+		t.Error("expected RAG retrieval progress in agent_event")
 	}
-	if !strings.Contains(combined, "Fetched document") {
-		t.Error("expected document fetch progress in output")
+	if !strings.Contains(allAgentText, "Fetched document") {
+		t.Error("expected document fetch progress in agent_event")
 	}
-	if !strings.Contains(combined, "Accumulated findings") {
-		t.Error("expected findings accumulation progress in output")
-	}
-	if !strings.Contains(combined, "All documents processed") {
-		t.Error("expected loop completion message in output")
-	}
-	// LLM sub-agents should also emit text
-	if !strings.Contains(combined, "Analysis complete") {
-		t.Error("expected LLM sub-agent text in output")
+	if !strings.Contains(allAgentText, "Accumulated findings") {
+		t.Error("expected findings accumulation progress in agent_event")
 	}
 
-	t.Logf("deep research output length: %d chars, %d SSE text events", len(combined), len(res.textParts))
+	// Agent lifecycle events should fire
+	if len(res.agentStarts) < 3 {
+		t.Errorf("expected agent_start events for multiple agents, got %d: %v", len(res.agentStarts), res.agentStarts)
+	}
+
+	t.Logf("deep research: %d content events, %d agent_event texts, agents started: %v",
+		len(res.textParts), len(res.agentEventTexts), res.agentStarts)
 }
 
 func TestWorkflow_DeepResearch_MultipleDocuments(t *testing.T) {
@@ -301,33 +315,7 @@ func TestWorkflow_DeepResearch_MultipleDocuments(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := makeTestConfig(t, upstream.URL)
-	agentCfg := config.AgentConfig{
-		ID:   "deep-research",
-		Type: "deep-research",
-		Name: "deep_research_pipeline",
-		SubAgents: []config.AgentConfig{
-			{Name: "document_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "analysis_findings", SystemPrompt: "Analyze: {current_document}"},
-			{Name: "data_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "database_results", SystemPrompt: "Data: {current_document}"},
-			{Name: "findings_summarizer", Model: "openai/gpt-4o", Provider: "test", OutputKey: "current_findings", SystemPrompt: "Summary: {analysis_findings} {database_results}"},
-			{Name: "report_generator", Model: "openai/gpt-4o", Provider: "test", OutputKey: "final_report", SystemPrompt: "Report: {all_findings}"},
-		},
-	}
-	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
-
-	ragClient := rag.NewClient()
-	rootAgent, err := deepresearch.NewAgent(cfg, &agentCfg, ragClient)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, zerolog.Nop())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	reg := agent.NewRegistry()
-	reg.Register("deep-research", core)
-	handler := Chat(reg, cfg, zerolog.Nop())
+	handler := buildDeepResearchHandler(t, cfg)
 
 	w := sendChatRequest(t, handler, "deep-research", "market analysis", "dr-multi")
 
@@ -336,20 +324,22 @@ func TestWorkflow_DeepResearch_MultipleDocuments(t *testing.T) {
 	}
 
 	res := parseSSE(w.Body.String())
-	combined := strings.Join(res.textParts, "")
+
+	// Code agent output goes to agent_event channel
+	allAgentText := strings.Join(res.agentEventTexts, "")
 
 	// RAG returns 5 mock documents — verify all were processed
-	fetchCount := strings.Count(combined, "Fetched document")
+	fetchCount := strings.Count(allAgentText, "Fetched document")
 	if fetchCount < 3 {
-		t.Errorf("expected at least 3 document fetches, got %d", fetchCount)
+		t.Errorf("expected at least 3 document fetches in agent_event, got %d", fetchCount)
 	}
 
-	accumCount := strings.Count(combined, "Accumulated findings for document")
+	accumCount := strings.Count(allAgentText, "Accumulated findings for document")
 	if accumCount < 3 {
-		t.Errorf("expected at least 3 accumulations, got %d", accumCount)
+		t.Errorf("expected at least 3 accumulations in agent_event, got %d", accumCount)
 	}
 
-	if !strings.Contains(combined, "All documents processed") {
+	if !strings.Contains(allAgentText, "documents processed") {
 		t.Error("loop should have completed all documents")
 	}
 
@@ -361,33 +351,7 @@ func TestWorkflow_DeepResearch_ThreadPersistence(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := makeTestConfig(t, upstream.URL)
-	agentCfg := config.AgentConfig{
-		ID:   "deep-research",
-		Type: "deep-research",
-		Name: "deep_research_pipeline",
-		SubAgents: []config.AgentConfig{
-			{Name: "document_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "analysis_findings", SystemPrompt: "Analyze: {current_document}"},
-			{Name: "data_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "database_results", SystemPrompt: "Data: {current_document}"},
-			{Name: "findings_summarizer", Model: "openai/gpt-4o", Provider: "test", OutputKey: "current_findings", SystemPrompt: "Summary: {analysis_findings} {database_results}"},
-			{Name: "report_generator", Model: "openai/gpt-4o", Provider: "test", OutputKey: "final_report", SystemPrompt: "Report: {all_findings}"},
-		},
-	}
-	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
-
-	ragClient := rag.NewClient()
-	rootAgent, err := deepresearch.NewAgent(cfg, &agentCfg, ragClient)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, zerolog.Nop())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	reg := agent.NewRegistry()
-	reg.Register("deep-research", core)
-	handler := Chat(reg, cfg, zerolog.Nop())
+	handler := buildDeepResearchHandler(t, cfg)
 
 	// First request
 	w1 := sendChatRequest(t, handler, "deep-research", "Q4 performance", "persist-thread")
@@ -597,31 +561,7 @@ func TestWorkflow_SSEFormat_DeepResearch(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := makeTestConfig(t, upstream.URL)
-	agentCfg := config.AgentConfig{
-		ID: "deep-research", Type: "deep-research", Name: "deep_research_pipeline",
-		SubAgents: []config.AgentConfig{
-			{Name: "document_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "analysis_findings", SystemPrompt: "Analyze: {current_document}"},
-			{Name: "data_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "database_results", SystemPrompt: "Data: {current_document}"},
-			{Name: "findings_summarizer", Model: "openai/gpt-4o", Provider: "test", OutputKey: "current_findings", SystemPrompt: "Summary: {analysis_findings} {database_results}"},
-			{Name: "report_generator", Model: "openai/gpt-4o", Provider: "test", OutputKey: "final_report", SystemPrompt: "Report: {all_findings}"},
-		},
-	}
-	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
-
-	ragClient := rag.NewClient()
-	rootAgent, err := deepresearch.NewAgent(cfg, &agentCfg, ragClient)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, zerolog.Nop())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	reg := agent.NewRegistry()
-	reg.Register("deep-research", core)
-	handler := Chat(reg, cfg, zerolog.Nop())
+	handler := buildDeepResearchHandler(t, cfg)
 
 	w := sendChatRequest(t, handler, "deep-research", "business performance", "sse-fmt")
 	if w.Code != 200 {

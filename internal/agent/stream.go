@@ -27,6 +27,8 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
 	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
 
+	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Int("messages", len(messages)).Msg("stream start")
+
 	writeProgress(w, "planning", "Analyzing...")
 
 	// Ensure session exists
@@ -91,32 +93,81 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, content *genai.Content, cb *sse.ChunkBuilder, logger zerolog.Logger) {
 	toolCallIdx := int64(0)
 	hadPartialText := false
-	currentAgent := ""
 	step := 0
+	lastAuthor := ""
+
+	// Agent transition tracking.
+	//
+	// The challenge: ParallelAgent interleaves streaming tokens between sub-agents
+	// (document_analyst, data_analyst), which would cause hundreds of agent_start/
+	// agent_done pairs if we tracked naively. We solve this by tracking a set of
+	// "parallel peers" — agents that interleave with each other.
+	//
+	// When a NEW agent appears that isn't a returning parallel peer, we close all
+	// agents in the previous group and start a new group.
+	activeGroup := make(map[string]bool) // agents in current parallel group
+	allSeen := make(map[string]bool)     // all agents ever seen (for loop detection)
+
+	streamLog := logger.With().Str("thread_id", threadID).Str("agent_id", core.AgentID).Logger()
 
 	isOutputAgent := func(author string) bool {
 		return core.OutputAgent == "" || author == core.OutputAgent
 	}
 
+	closeGroup := func() {
+		for a := range activeGroup {
+			writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", a), a, step)
+			streamLog.Debug().Str("sub_agent", a).Int("step", step).Msg("agent done")
+			// Remove from allSeen so the same agents can re-form a group
+			// in the next loop iteration (e.g. document_analyst on doc 2).
+			// The triggering agent (the one that caused the close) stays in
+			// allSeen since it's added after this function returns.
+			delete(allSeen, a)
+		}
+		activeGroup = make(map[string]bool)
+	}
+
 	transitionAgent := func(author string) {
-		if author == "" || author == currentAgent {
+		if author == "" || author == lastAuthor {
 			return
 		}
-		// Close previous agent
-		if currentAgent != "" {
-			writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", currentAgent), currentAgent, step)
+		lastAuthor = author
+
+		// Already in current group (parallel peer returning) — skip
+		if activeGroup[author] {
+			return
 		}
-		// Start new agent
-		currentAgent = author
+
+		// Determine if we should close the current group before starting this agent.
+		shouldClose := false
+		if allSeen[author] {
+			// Agent seen before (e.g. document_fetcher on doc 2) — new phase
+			shouldClose = true
+		} else if len(activeGroup) == 1 {
+			// Single active agent → sequential step, close it
+			shouldClose = true
+		}
+		// If activeGroup has multiple agents and this is a new agent, it's likely
+		// another parallel peer joining — don't close.
+
+		if shouldClose {
+			closeGroup()
+		}
+
+		allSeen[author] = true
+		activeGroup[author] = true
 		step++
 		writeAgentProgress(w, "agent_start", fmt.Sprintf("Running %s...", author), author, step)
+		streamLog.Info().Str("sub_agent", author).Int("step", step).Msg("agent start")
 	}
+
+	streamLog.Info().Msg("starting agent run")
 
 	for event, err := range core.Runner.Run(ctx, "default", threadID, content, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeSSE,
 	}) {
 		if err != nil {
-			logger.Error().Err(err).Msg("runner error")
+			streamLog.Error().Err(err).Msg("runner error")
 			writeProgress(w, "error", fmt.Sprintf("Error: %v", err))
 			break
 		}
@@ -205,6 +256,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 
 			// Regular tool call (non-confirmation) — emit delta for UI
 			if fc := part.FunctionCall; fc != nil {
+				streamLog.Info().Str("sub_agent", author).Str("tool", fc.Name).Str("call_id", fc.ID).Msg("tool call")
 				writeProgress(w, "executing", fmt.Sprintf("Running %s...", fc.Name))
 				argsJSON, _ := json.Marshal(fc.Args)
 				sse.WriteSSE(w, cb.ToolCallDelta(toolCallIdx, fc.ID, fc.Name, string(argsJSON)))
@@ -218,6 +270,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 				if fr.Name == toolconfirmation.FunctionCallName {
 					continue
 				}
+				streamLog.Debug().Str("sub_agent", author).Str("tool", fr.Name).Str("call_id", fr.ID).Msg("tool result")
 				evt := types.ToolResultEvent{}
 				evt.ToolResult.ToolCallID = fr.ID
 				evt.ToolResult.ToolName = fr.Name
@@ -230,10 +283,10 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		hadPartialText = false
 	}
 
-	// Close final agent
-	if currentAgent != "" {
-		writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", currentAgent), currentAgent, step)
-	}
+	// Close remaining active agents
+	closeGroup()
+
+	streamLog.Info().Int("steps", step).Msg("agent run complete")
 
 	// Stream closes when the runner completes (all workflow agents finished)
 	sse.WriteSSE(w, cb.Finish("stop"))

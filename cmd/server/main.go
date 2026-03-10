@@ -104,9 +104,11 @@ func main() {
 			continue
 		}
 
-		// Set OutputAgent to the last sub-agent (the one whose text goes to choices[0].delta.content).
-		// For flat agents (no sub-agents), leave empty so all text goes to content.
-		if len(agentCfg.SubAgents) > 0 {
+		// Set OutputAgent — the agent whose text goes to choices[0].delta.content.
+		// Explicit config takes precedence; otherwise fall back to last sub-agent.
+		if agentCfg.OutputAgent != "" {
+			core.OutputAgent = agentCfg.OutputAgent
+		} else if len(agentCfg.SubAgents) > 0 {
 			core.OutputAgent = agentCfg.SubAgents[len(agentCfg.SubAgents)-1].Name
 		}
 
