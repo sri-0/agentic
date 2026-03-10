@@ -8,6 +8,7 @@ import (
 
 	"agentic/internal/rag"
 
+	"github.com/rs/zerolog/log"
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/session"
@@ -25,8 +26,11 @@ func ragRetrievalRun(ragClient *rag.Client) func(agent.InvocationContext) iter.S
 				query = extractUserQuery(ctx)
 			}
 
+			log.Info().Str("agent", "rag_retrieval").Str("query", query[:min(len(query), 100)]).Msg("searching documents")
+
 			docs, err := ragClient.Search(query, 5, nil)
 			if err != nil {
+				log.Error().Err(err).Str("agent", "rag_retrieval").Msg("search failed")
 				yield(nil, fmt.Errorf("rag search: %w", err))
 				return
 			}
@@ -37,6 +41,7 @@ func ragRetrievalRun(ragClient *rag.Client) func(agent.InvocationContext) iter.S
 				docIDs = append(docIDs, doc.Metadata.DocumentID)
 				titles = append(titles, doc.Title)
 			}
+			log.Info().Str("agent", "rag_retrieval").Int("doc_count", len(docs)).Strs("titles", titles).Msg("documents retrieved")
 
 			docIDsJSON, _ := json.Marshal(docIDs)
 
@@ -93,16 +98,22 @@ func documentLoopRun(
 				maxDocs = 10
 			}
 
+			log.Info().Str("agent", "document_loop").Int("doc_count", maxDocs).Msg("starting document analysis")
+
 			for i := 0; i < maxDocs; i++ {
 				// ── Fetch document ────────────────────────────
+				log.Info().Str("agent", "document_loop").Int("doc", i+1).Int("total", maxDocs).Str("doc_id", docIDs[i]).Msg("fetching document")
+
 				doc, err := ragClient.GetByID(docIDs[i])
 				if err != nil {
+					log.Error().Err(err).Str("agent", "document_loop").Str("doc_id", docIDs[i]).Msg("fetch failed")
 					yield(nil, fmt.Errorf("fetch doc %s: %w", docIDs[i], err))
 					return
 				}
 
 				segments, err := ragClient.GetSegments(docIDs[i])
 				if err != nil {
+					log.Error().Err(err).Str("agent", "document_loop").Str("doc_id", docIDs[i]).Msg("segments fetch failed")
 					yield(nil, fmt.Errorf("fetch segments %s: %w", docIDs[i], err))
 					return
 				}
@@ -137,6 +148,7 @@ func documentLoopRun(
 				}
 
 				// ── Run parallel analysis (document_analyst + data_analyst) ──
+				log.Debug().Str("agent", "document_loop").Int("doc", i+1).Str("title", doc.Title).Msg("running parallel analysis")
 				for event, err := range parallelAnalysis.Run(ctx) {
 					if err != nil {
 						yield(nil, fmt.Errorf("parallel analysis doc %d: %w", i+1, err))
@@ -159,6 +171,7 @@ func documentLoopRun(
 				}
 
 				// ── Accumulate findings ──────────────────────
+				log.Debug().Str("agent", "document_loop").Int("doc", i+1).Msg("accumulating findings")
 				currentFindings := stateString(ctx, KeyCurrentFindings)
 				allFindings := stateString(ctx, KeyAllFindings)
 
@@ -213,6 +226,8 @@ func qualityCheckerRun() func(agent.InvocationContext) iter.Seq2[*session.Event,
 			approved := strings.Contains(upper, "APPROVED") ||
 				strings.Contains(upper, "NO MAJOR ISSUES") ||
 				strings.Contains(upper, "REPORT IS COMPLETE")
+
+			log.Info().Str("agent", "quality_checker").Bool("approved", approved).Msg("quality check")
 
 			evt := session.NewEvent(ctx.InvocationID())
 			evt.Author = "quality_checker"
