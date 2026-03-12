@@ -17,6 +17,7 @@ import (
 	"agentic/internal/config"
 	"agentic/internal/rag"
 	"agentic/internal/server"
+	"agentic/pkg/db/opensearch"
 
 	adkagent "google.golang.org/adk/agent"
 
@@ -76,7 +77,25 @@ func main() {
 	cfg.Agents = agentsCfg
 	logger.Info().Strs("agents", agentsCfg.AgentIDs()).Msg("agents config loaded")
 
-	ragClient := rag.NewClient()
+	// Initialize OpenSearch client
+	osClient := opensearch.New(opensearch.Config{
+		URL:      cfg.OpenSearchURL,
+		Username: cfg.OpenSearchUsername,
+		Password: cfg.OpenSearchPassword,
+	}, logger)
+
+	// Ensure indices exist (non-fatal if OpenSearch is down)
+	if err := osClient.Ping(ctx); err != nil {
+		logger.Warn().Err(err).Str("url", cfg.OpenSearchURL).Msg("opensearch not reachable, RAG endpoints will fail")
+	} else {
+		if err := opensearch.EnsureIndices(ctx, osClient); err != nil {
+			logger.Error().Err(err).Msg("failed to ensure opensearch indices")
+		} else {
+			logger.Info().Str("url", cfg.OpenSearchURL).Msg("opensearch connected, indices ready")
+		}
+	}
+
+	ragClient := rag.NewClient(osClient)
 	registry := agent.NewRegistry()
 
 	for i := range agentsCfg.Agents {
@@ -122,7 +141,7 @@ func main() {
 
 	logger.Info().Strs("agents", registry.IDs()).Msg("agent registry ready")
 
-	router := server.NewRouter(registry, cfg, logger)
+	router := server.NewRouter(registry, cfg, osClient, logger)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{

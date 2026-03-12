@@ -15,6 +15,10 @@ type Config struct {
 	LogLevel  string `env:"LOG_LEVEL,default=info"`
 	LogJSON   bool   `env:"LOG_JSON,default=false"`
 
+	OpenSearchURL      string `env:"OPENSEARCH_URL,default=http://localhost:9200"`
+	OpenSearchUsername  string `env:"OPENSEARCH_USERNAME"`
+	OpenSearchPassword  string `env:"OPENSEARCH_PASSWORD"`
+
 	// Loaded from YAML files
 	Models *ModelsConfig
 	Agents *AgentsConfig

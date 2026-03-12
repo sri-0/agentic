@@ -7,13 +7,14 @@ import (
 	"agentic/internal/agent"
 	"agentic/internal/config"
 	"agentic/internal/handler"
+	"agentic/pkg/db/opensearch"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog"
 )
 
 // NewRouter creates the HTTP router with all routes and middleware.
-func NewRouter(registry *agent.Registry, cfg *config.Config, logger zerolog.Logger) *mux.Router {
+func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, logger zerolog.Logger) *mux.Router {
 	r := mux.NewRouter()
 
 	r.Use(corsMiddleware)
@@ -21,10 +22,35 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, logger zerolog.Logg
 
 	r.HandleFunc("/health", handler.Health(registry)).Methods("GET")
 	r.HandleFunc("/v1/models", handler.Models(cfg)).Methods("GET")
-	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, logger)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/messages", handler.Messages(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, logger)).Methods("POST", "OPTIONS")
+
+	// RAG search endpoint (standalone vector/text search)
+	if osClient != nil {
+		r.HandleFunc("/v1/rag/search", handler.RAGSearch(osClient, logger)).Methods("POST", "OPTIONS")
+
+		// Prompts CRUD
+		r.HandleFunc("/v1/prompts", handler.PromptsList(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/prompts", handler.PromptsCreate(osClient, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/prompts/{id}", handler.PromptsGet(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/prompts/{id}", handler.PromptsUpdate(osClient, logger)).Methods("PUT", "OPTIONS")
+		r.HandleFunc("/v1/prompts/{id}", handler.PromptsDelete(osClient, logger)).Methods("DELETE")
+
+		// Threads (chats) CRUD
+		r.HandleFunc("/v1/threads", handler.ThreadsList(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/threads", handler.ThreadsCreate(osClient, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/threads/{id}", handler.ThreadsGet(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/threads/{id}", handler.ThreadsUpdate(osClient, logger)).Methods("PUT", "OPTIONS")
+		r.HandleFunc("/v1/threads/{id}", handler.ThreadsDelete(osClient, logger)).Methods("DELETE")
+
+		// Thread messages
+		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesList(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesCreate(osClient, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/threads/{id}/messages/bulk", handler.ThreadsMessagesBulkCreate(osClient, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesDelete(osClient, logger)).Methods("DELETE")
+	}
 
 	return r
 }
