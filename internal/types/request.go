@@ -8,6 +8,8 @@ type ChatCompletionRequest struct {
 	Messages []ChatMessage `json:"messages"`
 	Stream   *bool         `json:"stream,omitempty"`
 	ThreadID string        `json:"thread_id,omitempty"`
+	UseRAG   bool          `json:"use_rag,omitempty"`
+	PromptID string        `json:"prompt_id,omitempty"`
 }
 
 // ChatMessage is a minimal message type for extracting role/content.

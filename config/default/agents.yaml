@@ -1,5 +1,5 @@
 agents:
-  - id: basic-agent
+  - id: test-agent
     type: basic
     name: basic_agent
     description: AI assistant with database, search, and calculation tools
@@ -20,6 +20,7 @@ agents:
       - query_database
       - write_database
       - retrieve_documents
+      - opensearch_retrieve
       - web_search
       - calculate
 
