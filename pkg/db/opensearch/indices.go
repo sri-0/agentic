@@ -8,6 +8,8 @@ import (
 const (
 	IndexEmbeddings = "embeddings"
 	IndexPrompts    = "prompts"
+	IndexThreads    = "threads"
+	IndexMessages   = "messages"
 
 	// Default vector dimension (OpenAI text-embedding-3-small).
 	DefaultVectorDimension = 1536
@@ -61,10 +63,49 @@ var PromptsMapping = json.RawMessage(`{
 	}
 }`)
 
-// EnsureIndices creates both indices if they don't exist.
+// ThreadsMapping is the index mapping for the threads (chats) store.
+var ThreadsMapping = json.RawMessage(`{
+	"mappings": {
+		"properties": {
+			"user_id":    { "type": "keyword" },
+			"title":      { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+			"model":      { "type": "keyword" },
+			"pinned":     { "type": "boolean" },
+			"pinned_at":  { "type": "date" },
+			"public":     { "type": "boolean" },
+			"project_id": { "type": "keyword" },
+			"created_at": { "type": "date" },
+			"updated_at": { "type": "date" }
+		}
+	}
+}`)
+
+// MessagesMapping is the index mapping for the messages store.
+var MessagesMapping = json.RawMessage(`{
+	"mappings": {
+		"properties": {
+			"thread_id":        { "type": "keyword" },
+			"user_id":          { "type": "keyword" },
+			"role":             { "type": "keyword" },
+			"content":          { "type": "text" },
+			"parts":            { "type": "text", "index": false },
+			"model":            { "type": "keyword" },
+			"message_group_id": { "type": "keyword" },
+			"created_at":       { "type": "date" }
+		}
+	}
+}`)
+
+// EnsureIndices creates all indices if they don't exist.
 func EnsureIndices(ctx context.Context, client *Client) error {
 	if err := client.CreateIndex(ctx, IndexEmbeddings, EmbeddingsMapping); err != nil {
 		return err
 	}
-	return client.CreateIndex(ctx, IndexPrompts, PromptsMapping)
+	if err := client.CreateIndex(ctx, IndexPrompts, PromptsMapping); err != nil {
+		return err
+	}
+	if err := client.CreateIndex(ctx, IndexThreads, ThreadsMapping); err != nil {
+		return err
+	}
+	return client.CreateIndex(ctx, IndexMessages, MessagesMapping)
 }

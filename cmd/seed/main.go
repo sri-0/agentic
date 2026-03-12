@@ -34,6 +34,7 @@ func main() {
 
 	seedEmbeddings(ctx, client, logger)
 	seedPrompts(ctx, client, logger)
+	seedThreads(ctx, client, logger)
 
 	logger.Info().Msg("seed complete")
 }
@@ -243,6 +244,108 @@ func seedPrompts(ctx context.Context, client *opensearch.Client, logger zerolog.
 
 	client.Refresh(ctx, opensearch.IndexPrompts)
 	logger.Info().Int("count", count).Msg("seeded prompts")
+}
+
+func seedThreads(ctx context.Context, client *opensearch.Client, logger zerolog.Logger) {
+	threads := []struct {
+		id  string
+		doc map[string]any
+	}{
+		{id: "thread-001", doc: map[string]any{
+			"user_id":    "local-user",
+			"title":      "Q4 Performance Review",
+			"model":      "test-agent",
+			"pinned":     true,
+			"pinned_at":  "2025-03-01T00:00:00Z",
+			"public":     false,
+			"project_id": nil,
+			"created_at": "2025-02-15T10:00:00Z",
+			"updated_at": "2025-03-01T14:30:00Z",
+		}},
+		{id: "thread-002", doc: map[string]any{
+			"user_id":    "local-user",
+			"title":      "Help with Go code",
+			"model":      "openai/gpt-4o-mini",
+			"pinned":     false,
+			"pinned_at":  nil,
+			"public":     false,
+			"project_id": nil,
+			"created_at": "2025-03-05T09:00:00Z",
+			"updated_at": "2025-03-05T09:45:00Z",
+		}},
+		{id: "thread-003", doc: map[string]any{
+			"user_id":    "local-user",
+			"title":      "Deep research on AI trends",
+			"model":      "deep-research",
+			"pinned":     false,
+			"pinned_at":  nil,
+			"public":     true,
+			"project_id": nil,
+			"created_at": "2025-03-10T08:00:00Z",
+			"updated_at": "2025-03-10T10:00:00Z",
+		}},
+	}
+
+	count := 0
+	for _, t := range threads {
+		_, err := client.IndexDocument(ctx, opensearch.IndexThreads, t.id, t.doc)
+		if err != nil {
+			logger.Error().Err(err).Str("id", t.id).Msg("failed to index thread")
+			continue
+		}
+		count++
+	}
+
+	// Seed some messages for thread-001
+	messages := []struct {
+		id  string
+		doc map[string]any
+	}{
+		{id: "msg-001", doc: map[string]any{
+			"thread_id":  "thread-001",
+			"user_id":    "local-user",
+			"role":       "user",
+			"content":    "What were our key metrics in Q4?",
+			"model":      "",
+			"created_at": "2025-02-15T10:00:00Z",
+		}},
+		{id: "msg-002", doc: map[string]any{
+			"thread_id":  "thread-001",
+			"role":       "assistant",
+			"content":    "Based on the Q4 2024 performance data, here are the key metrics:\n\n- Revenue exceeded targets by 12%\n- MRR reached $284K with 14,820 active users\n- Operating margin improved to 23%\n- 47 enterprise deals closed",
+			"model":      "test-agent",
+			"created_at": "2025-02-15T10:00:30Z",
+		}},
+		{id: "msg-003", doc: map[string]any{
+			"thread_id":  "thread-001",
+			"user_id":    "local-user",
+			"role":       "user",
+			"content":    "How does that compare to Q3?",
+			"model":      "",
+			"created_at": "2025-02-15T10:01:00Z",
+		}},
+		{id: "msg-004", doc: map[string]any{
+			"thread_id":  "thread-001",
+			"role":       "assistant",
+			"content":    "Compared to Q3:\n- Operating margin improved from 19% to 23%\n- Enterprise deals increased from 31 to 47 (52% growth)\n- Customer acquisition cost decreased by 18%\n- Lifetime value increased by 22%",
+			"model":      "test-agent",
+			"created_at": "2025-02-15T10:01:30Z",
+		}},
+	}
+
+	msgCount := 0
+	for _, m := range messages {
+		_, err := client.IndexDocument(ctx, opensearch.IndexMessages, m.id, m.doc)
+		if err != nil {
+			logger.Error().Err(err).Str("id", m.id).Msg("failed to index message")
+			continue
+		}
+		msgCount++
+	}
+
+	client.Refresh(ctx, opensearch.IndexThreads)
+	client.Refresh(ctx, opensearch.IndexMessages)
+	logger.Info().Int("threads", count).Int("messages", msgCount).Msg("seeded threads")
 }
 
 func randVec(dim int, seed int64) []float64 {

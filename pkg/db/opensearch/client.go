@@ -211,6 +211,17 @@ func (c *Client) KNNSearch(ctx context.Context, index, field string, vector []fl
 	return c.Search(ctx, index, knnQuery)
 }
 
+// DeleteByQuery deletes all documents matching the given query.
+func (c *Client) DeleteByQuery(ctx context.Context, index string, query any) error {
+	data, err := json.Marshal(query)
+	if err != nil {
+		return fmt.Errorf("marshal query: %w", err)
+	}
+	path := fmt.Sprintf("/%s/_delete_by_query", index)
+	_, err = c.do(ctx, "POST", path, data)
+	return err
+}
+
 // Refresh forces a refresh on an index (useful for tests).
 func (c *Client) Refresh(ctx context.Context, index string) error {
 	_, err := c.do(ctx, "POST", fmt.Sprintf("/%s/_refresh", index), nil)
