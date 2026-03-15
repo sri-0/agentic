@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"agentic/internal/chat"
 	"agentic/internal/sse"
 	"agentic/internal/types"
 
@@ -17,8 +18,8 @@ import (
 )
 
 // StreamAgentRun uses the ADK runner with StreamingModeSSE to execute the
-// agent loop, mapping ADK events to OpenAI-compatible SSE chunks.
-func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, logger zerolog.Logger) {
+// agent loop. If saver is non-nil, user and assistant messages are persisted.
+func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -44,7 +45,12 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 	lastMsg := messages[len(messages)-1]
 	userContent := genai.NewContentFromText(lastMsg.Content, genai.RoleUser)
 
-	streamEvents(ctx, w, core, threadID, userContent, cb, logger)
+	// Persist user message
+	if saver != nil {
+		saver.SaveUserMessage(ctx, threadID, lastMsg.Content)
+	}
+
+	streamEvents(ctx, w, core, threadID, userContent, cb, saver, logger)
 }
 
 // StreamResumeRun handles the resume flow after HITL approval/denial.
@@ -78,21 +84,14 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 		Parts: []*genai.Part{{FunctionResponse: funcResponse}},
 	}
 
-	streamEvents(ctx, w, core, threadID, confirmContent, cb, logger)
+	streamEvents(ctx, w, core, threadID, confirmContent, cb, nil, logger)
 }
 
 // streamEvents is the shared event processing loop for both new turns and resumes.
-// For workflow agents (Sequential/Parallel/Loop), multiple sub-agents emit events.
-// We let the runner complete rather than closing on the first IsFinalResponse().
-//
-// Agent event routing:
-//   - If core.OutputAgent is set, only that agent's text goes to choices[0].delta.content.
-//     All other agents' text is routed to custom agent_event SSE events.
-//   - If core.OutputAgent is empty (flat agent), all text goes to choices[0].delta.content.
-//   - Agent transitions emit agent_progress events (agent_start/agent_done) with step tracking.
-func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, content *genai.Content, cb *sse.ChunkBuilder, logger zerolog.Logger) {
+func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, content *genai.Content, cb *sse.ChunkBuilder, saver *chat.MessageSaver, logger zerolog.Logger) {
 	toolCallIdx := int64(0)
 	hadPartialText := false
+	var outputText string // accumulates output agent text for persistence
 	step := 0
 	lastAuthor := ""
 
@@ -185,6 +184,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 				if part.Text != "" {
 					if isOutputAgent(author) {
 						sse.WriteSSE(w, cb.TextDelta(part.Text))
+						outputText += part.Text
 					} else {
 						writeAgentEvent(w, author, "text_delta", part.Text, step)
 					}
@@ -200,6 +200,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			if part.Text != "" && !hadPartialText {
 				if isOutputAgent(author) {
 					sse.WriteSSE(w, cb.TextDelta(part.Text))
+					outputText += part.Text
 				} else {
 					writeAgentEvent(w, author, "text_delta", part.Text, step)
 				}
@@ -285,6 +286,11 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 
 	// Close remaining active agents
 	closeGroup()
+
+	// Persist assistant message
+	if saver != nil && outputText != "" {
+		saver.SaveAssistantMessage(ctx, threadID, outputText, core.AgentID)
+	}
 
 	streamLog.Info().Int("steps", step).Msg("agent run complete")
 

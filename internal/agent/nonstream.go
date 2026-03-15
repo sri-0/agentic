@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"agentic/internal/chat"
 	"agentic/internal/types"
 
 	"github.com/google/uuid"
@@ -16,7 +17,8 @@ import (
 )
 
 // NonStreamAgentRun executes the agent and returns a standard ChatCompletion JSON response.
-func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, logger zerolog.Logger) {
+// If saver is non-nil, user and assistant messages are persisted to the thread.
+func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
 
 	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Int("messages", len(messages)).Msg("non-stream start")
@@ -29,6 +31,11 @@ func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, t
 
 	lastMsg := messages[len(messages)-1]
 	userContent := genai.NewContentFromText(lastMsg.Content, genai.RoleUser)
+
+	// Persist user message
+	if saver != nil {
+		saver.SaveUserMessage(ctx, threadID, lastMsg.Content)
+	}
 
 	var textContent string
 	var finishReason string = "stop"
@@ -75,6 +82,11 @@ func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, t
 			},
 		},
 		"thread_id": threadID,
+	}
+
+	// Persist assistant message
+	if saver != nil {
+		saver.SaveAssistantMessage(ctx, threadID, textContent, core.AgentID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

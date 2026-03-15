@@ -54,6 +54,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 		}
 
 		threadID := req.ThreadID
+		persistThread := threadID != ""
 		if threadID == "" {
 			threadID = fmt.Sprintf("anon-%s", uuid.New().String()[:12])
 		}
@@ -73,6 +74,11 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			messages = rag.AugmentMessages(r.Context(), osClient, messages, logger)
 		}
 
+		var saver *chat.MessageSaver
+		if persistThread {
+			saver = chat.NewMessageSaver(osClient, logger)
+		}
+
 		logger.Info().
 			Str("thread_id", threadID).
 			Str("agent", core.AgentID).
@@ -83,9 +89,9 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			Msg("agent chat")
 
 		if req.Stream != nil && !*req.Stream {
-			agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, logger)
+			agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
 		} else {
-			agent.StreamAgentRun(r.Context(), w, core, threadID, messages, logger)
+			agent.StreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
 		}
 	}
 }
