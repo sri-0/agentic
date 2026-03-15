@@ -12,6 +12,7 @@ import (
 
 	"agentic/internal/agent"
 	"agentic/internal/config"
+	"agentic/internal/hitl"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -138,7 +139,7 @@ func newMessagesTestCore(t *testing.T, upstream *httptest.Server) *agent.Core {
 	return &agent.Core{
 		Runner:         r,
 		SessionManager: sm,
-		Interrupts:     agent.NewInterruptStore(),
+		Interrupts:     hitl.NewInMemoryStore(),
 		AgentID:        "test-agent",
 		Config: &config.Config{
 			AppName: "test_app",

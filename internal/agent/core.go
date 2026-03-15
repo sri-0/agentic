@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"agentic/internal/config"
+	"agentic/internal/hitl"
+	pkgredis "agentic/pkg/db/redis"
 	genaiopenai "agentic/pkg/genai/openai"
 
 	"github.com/rs/zerolog"
@@ -15,62 +18,37 @@ import (
 	"google.golang.org/adk/tool"
 )
 
-// PendingInterrupt stores the minimal info needed to map a thread to its
-// ADK confirmation call ID so the resume endpoint can construct the
-// FunctionResponse to send back to the runner.
-type PendingInterrupt struct {
-	ConfirmationCallID string         // the adk_request_confirmation function call ID
-	ToolCallID         string         // the original tool's function call ID
-	ToolName           string         // e.g. "write_database"
-	Prompt             string         // human-readable hint
-	Details            map[string]any // original tool args for display
-}
-
-// InterruptStore is a thin thread-safe map from threadID → PendingInterrupt.
-type InterruptStore struct {
-	mu      chan struct{} // simple mutex via buffered channel
-	pending map[string]*PendingInterrupt
-}
-
-func NewInterruptStore() *InterruptStore {
-	s := &InterruptStore{
-		mu:      make(chan struct{}, 1),
-		pending: make(map[string]*PendingInterrupt),
-	}
-	s.mu <- struct{}{} // initialize unlocked
-	return s
-}
-
-func (s *InterruptStore) Set(threadID string, p *PendingInterrupt) {
-	<-s.mu
-	s.pending[threadID] = p
-	s.mu <- struct{}{}
-}
-
-func (s *InterruptStore) Get(threadID string) *PendingInterrupt {
-	<-s.mu
-	p := s.pending[threadID]
-	s.mu <- struct{}{}
-	return p
-}
-
-func (s *InterruptStore) Clear(threadID string) {
-	<-s.mu
-	delete(s.pending, threadID)
-	s.mu <- struct{}{}
-}
-
 type Core struct {
 	Runner         *runner.Runner
 	SessionManager *SessionManager
-	Interrupts     *InterruptStore
+	Interrupts     hitl.Store
 	AgentID        string
 	OutputAgent    string // name of the agent whose output goes to choices[].delta.content
 	Config         *config.Config
 	Logger         zerolog.Logger
 }
 
-func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool, logger zerolog.Logger) (*Core, error) {
+// NewHITLStore creates a hitl.Store based on cfg.HITLStore.
+// Set HITL_STORE=redis to use Redis (requires REDIS_HOST/REDIS_PORT). Defaults to in-memory.
+func NewHITLStore(cfg *config.Config, logger zerolog.Logger) (hitl.Store, error) {
+	switch cfg.HITLStore {
+	case "redis":
+		if cfg.Redis == nil {
+			return nil, fmt.Errorf("HITL_STORE=redis but no Redis config (set REDIS_HOST etc)")
+		}
+		r, err := pkgredis.New(context.Background(), *cfg.Redis)
+		if err != nil {
+			return nil, fmt.Errorf("hitl redis: %w", err)
+		}
+		logger.Info().Msg("hitl: using redis store")
+		return hitl.NewRedisStore(r.Client, "", 0), nil
+	default:
+		logger.Info().Msg("hitl: using in-memory store")
+		return hitl.NewInMemoryStore(), nil
+	}
+}
+
+func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool, interrupts hitl.Store, logger zerolog.Logger) (*Core, error) {
 	// Resolve provider config for the agent's LLM
 	baseURL, apiKey, httpClient := resolveProvider(cfg, agentCfg)
 
@@ -111,7 +89,7 @@ func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool
 	return &Core{
 		Runner:         r,
 		SessionManager: sm,
-		Interrupts:     NewInterruptStore(),
+		Interrupts:     interrupts,
 		AgentID:        agentCfg.ID,
 		Config:         cfg,
 		Logger:         logger,
@@ -119,7 +97,7 @@ func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool
 }
 
 // NewCoreWithAgent creates a Core using a pre-built agent hierarchy (e.g. for multi-agent setups).
-func NewCoreWithAgent(cfg *config.Config, agentCfg *config.AgentConfig, rootAgent adkagent.Agent, logger zerolog.Logger) (*Core, error) {
+func NewCoreWithAgent(cfg *config.Config, agentCfg *config.AgentConfig, rootAgent adkagent.Agent, interrupts hitl.Store, logger zerolog.Logger) (*Core, error) {
 	sessionService := session.InMemoryService()
 	sm := NewSessionManager(sessionService, cfg.AppName, logger)
 
@@ -139,7 +117,7 @@ func NewCoreWithAgent(cfg *config.Config, agentCfg *config.AgentConfig, rootAgen
 	return &Core{
 		Runner:         r,
 		SessionManager: sm,
-		Interrupts:     NewInterruptStore(),
+		Interrupts:     interrupts,
 		AgentID:        agentCfg.ID,
 		Config:         cfg,
 		Logger:         logger,

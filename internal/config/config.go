@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	pkgredis "agentic/pkg/db/redis"
+
 	"github.com/sethvargo/go-envconfig"
 )
 
@@ -18,6 +20,9 @@ type Config struct {
 	OpenSearchURL      string `env:"OPENSEARCH_URL,default=http://localhost:9200"`
 	OpenSearchUsername  string `env:"OPENSEARCH_USERNAME"`
 	OpenSearchPassword  string `env:"OPENSEARCH_PASSWORD"`
+
+	Redis     *pkgredis.RedisConfig `env:",noinit"`
+	HITLStore string                `env:"HITL_STORE,default=memory"` // "memory" or "redis"
 
 	// Loaded from YAML files
 	Models *ModelsConfig

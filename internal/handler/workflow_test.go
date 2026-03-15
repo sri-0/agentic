@@ -15,6 +15,7 @@ import (
 	"agentic/agents/triage"
 	"agentic/internal/agent"
 	"agentic/internal/config"
+	"agentic/internal/hitl"
 	"agentic/internal/rag"
 
 	"github.com/rs/zerolog"
@@ -194,7 +195,7 @@ func buildDeepResearchHandler(t *testing.T, cfg *config.Config) http.HandlerFunc
 		t.Fatal(err)
 	}
 
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, zerolog.Nop())
+	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestWorkflow_BasicAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, zerolog.Nop())
+	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +439,7 @@ func TestWorkflow_TriageAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, zerolog.Nop())
+	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +508,7 @@ func TestWorkflow_MultiAgentRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bc, err := agent.NewCoreWithAgent(cfg, &basicCfg, ba, zerolog.Nop())
+	bc, err := agent.NewCoreWithAgent(cfg, &basicCfg, ba, hitl.NewInMemoryStore(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +519,7 @@ func TestWorkflow_MultiAgentRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tc, err := agent.NewCoreWithAgent(cfg, &triageCfg, ta, zerolog.Nop())
+	tc, err := agent.NewCoreWithAgent(cfg, &triageCfg, ta, hitl.NewInMemoryStore(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}

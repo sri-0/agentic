@@ -9,6 +9,7 @@ import (
 	"agentic/internal/chat"
 	"agentic/internal/sse"
 	"agentic/internal/types"
+	"agentic/internal/hitl"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -55,7 +56,7 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 
 // StreamResumeRun handles the resume flow after HITL approval/denial.
 // It sends the confirmation FunctionResponse back through the runner.
-func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, pending *PendingInterrupt, approved bool, logger zerolog.Logger) {
+func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, pending *hitl.PendingInterrupt, approved bool, logger zerolog.Logger) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -232,13 +233,15 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 				}
 
 				// Store the pending interrupt so the resume endpoint can find it
-				core.Interrupts.Set(threadID, &PendingInterrupt{
+				if err := core.Interrupts.Set(threadID, &hitl.PendingInterrupt{
 					ConfirmationCallID: fc.ID,
 					ToolCallID:         originalCall.ID,
 					ToolName:           originalCall.Name,
 					Prompt:             hint,
 					Details:            originalCall.Args,
-				})
+				}); err != nil {
+					logger.Error().Err(err).Msg("failed to store HITL interrupt")
+				}
 
 				// Emit tool_interrupt SSE event for the frontend
 				evt := types.ToolInterruptEvent{}

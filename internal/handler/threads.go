@@ -303,7 +303,7 @@ func ThreadsMessagesCreate(osClient *opensearch.Client, logger zerolog.Logger) h
 			"user_id":          req.UserID,
 			"role":             req.Role,
 			"content":          req.Content,
-			"parts":            req.Parts,
+			"parts":            serializeParts(req.Parts),
 			"model":            req.Model,
 			"message_group_id": req.MessageGroupID,
 			"created_at":       now,
@@ -367,7 +367,7 @@ func ThreadsMessagesBulkCreate(osClient *opensearch.Client, logger zerolog.Logge
 				"user_id":          m.UserID,
 				"role":             m.Role,
 				"content":          m.Content,
-				"parts":            m.Parts,
+				"parts":            serializeParts(m.Parts),
 				"model":            m.Model,
 				"message_group_id": m.MessageGroupID,
 				"created_at":       now,
@@ -510,4 +510,16 @@ func getBool(m map[string]any, key string) bool {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+// serializeParts converts parts to a JSON string for storage in OpenSearch text field.
+func serializeParts(parts any) string {
+	if parts == nil {
+		return ""
+	}
+	data, err := json.Marshal(parts)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

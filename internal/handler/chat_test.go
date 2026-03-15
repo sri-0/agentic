@@ -14,6 +14,7 @@ import (
 
 	"agentic/internal/agent"
 	"agentic/internal/config"
+	"agentic/internal/hitl"
 
 	"github.com/rs/zerolog"
 	adkagent "google.golang.org/adk/agent"
@@ -43,7 +44,7 @@ func newTestCore(t *testing.T, customAgent adkagent.Agent) *agent.Core {
 	return &agent.Core{
 		Runner:         r,
 		SessionManager: sm,
-		Interrupts:     agent.NewInterruptStore(),
+		Interrupts:     hitl.NewInMemoryStore(),
 		AgentID:        "test-agent",
 		Config: &config.Config{
 			AppName: appName,
@@ -243,7 +244,7 @@ func TestResumeHandler(t *testing.T) {
 	}
 
 	// Set pending interrupt
-	core.Interrupts.Set("thread-resume", &agent.PendingInterrupt{
+	_ = core.Interrupts.Set("thread-resume", &hitl.PendingInterrupt{
 		ConfirmationCallID: "confirm_001",
 		ToolCallID:         "call_001",
 		ToolName:           "write_database",
@@ -277,7 +278,7 @@ func TestResumeHandler(t *testing.T) {
 	}
 
 	// Verify interrupt was cleared
-	if pending := core.Interrupts.Get("thread-resume"); pending != nil {
+	if pending, _ := core.Interrupts.Get("thread-resume"); pending != nil {
 		t.Error("expected pending interrupt to be cleared after resume")
 	}
 }

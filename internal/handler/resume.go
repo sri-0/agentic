@@ -32,7 +32,7 @@ func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 		var core *agent.Core
 		for _, id := range registry.IDs() {
 			c := registry.Get(id)
-			if pending := c.Interrupts.Get(req.ThreadID); pending != nil {
+			if p, _ := c.Interrupts.Get(req.ThreadID); p != nil {
 				core = c
 				break
 			}
@@ -43,8 +43,8 @@ func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 			return
 		}
 
-		pending := core.Interrupts.Get(req.ThreadID)
-		if pending == nil {
+		pending, err := core.Interrupts.Get(req.ThreadID)
+		if err != nil || pending == nil {
 			http.Error(w, `{"error": "no pending confirmation for this thread"}`, http.StatusNotFound)
 			return
 		}
@@ -59,7 +59,7 @@ func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 			Msg("resuming agent")
 
 		// Clear the pending interrupt
-		core.Interrupts.Clear(req.ThreadID)
+		_ = core.Interrupts.Clear(req.ThreadID)
 
 		// Resume via the runner with the confirmation response
 		agent.StreamResumeRun(r.Context(), w, core, req.ThreadID, pending, approved, logger)
