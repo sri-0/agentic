@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
@@ -23,10 +24,11 @@ type Provider struct {
 	Models    []Model `yaml:"models"`
 
 	// mTLS / custom certificate settings
-	SSLClientCertEnv       string `yaml:"ssl_client_cert_env"`
-	SSLClientKeyEnv        string `yaml:"ssl_client_key_env"`
+	SSLClientCertEnv        string `yaml:"ssl_client_cert_env"`
+	SSLClientKeyEnv         string `yaml:"ssl_client_key_env"`
 	SSLClientKeyPasswordEnv string `yaml:"ssl_client_key_password_env"`
-	SSLTrustStoreEnv       string `yaml:"ssl_trust_store_env"`
+	SSLTrustStoreEnv        string `yaml:"ssl_trust_store_env"`
+	SSLInsecureSkipVerify   bool   `yaml:"ssl_insecure_skip_verify"`
 }
 
 // APIKey reads the API key from the environment variable specified by APIKeyEnv.
@@ -37,22 +39,27 @@ func (p *Provider) APIKey() string {
 	return os.Getenv(p.APIKeyEnv)
 }
 
-// HTTPClient returns an *http.Client configured with mTLS certs if set,
-// or nil if no custom TLS is needed (caller should use http.DefaultClient).
+// HTTPClient returns an *http.Client configured with TLS settings from the provider.
+// Always returns a non-nil client. When mTLS certs, a custom CA, or insecure skip
+// verify are configured, the client uses a custom transport; otherwise it uses defaults.
 func (p *Provider) HTTPClient() (*http.Client, error) {
 	certPath := envOrEmpty(p.SSLClientCertEnv)
 	keyPath := envOrEmpty(p.SSLClientKeyEnv)
 	trustStorePath := envOrEmpty(p.SSLTrustStoreEnv)
 
-	if certPath == "" && keyPath == "" && trustStorePath == "" {
-		return nil, nil
+	hasTLS := certPath != "" || keyPath != "" || trustStorePath != "" || p.SSLInsecureSkipVerify
+
+	if !hasTLS {
+		return &http.Client{}, nil
 	}
 
-	tlsCfg := &tls.Config{}
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: p.SSLInsecureSkipVerify,
+	}
 
 	// Load client certificate + key for mTLS
 	if certPath != "" && keyPath != "" {
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		cert, err := loadKeyPair(certPath, keyPath, envOrEmpty(p.SSLClientKeyPasswordEnv))
 		if err != nil {
 			return nil, fmt.Errorf("loading client cert/key: %w", err)
 		}
@@ -82,6 +89,36 @@ func envOrEmpty(envName string) string {
 		return ""
 	}
 	return os.Getenv(envName)
+}
+
+// loadKeyPair loads a TLS certificate and key, decrypting the key with password if provided.
+func loadKeyPair(certPath, keyPath, password string) (tls.Certificate, error) {
+	if password == "" {
+		return tls.LoadX509KeyPair(certPath, keyPath)
+	}
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("reading cert: %w", err)
+	}
+
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("reading key: %w", err)
+	}
+
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return tls.Certificate{}, fmt.Errorf("failed to decode PEM block from key")
+	}
+
+	decrypted, err := x509.DecryptPEMBlock(block, []byte(password)) //nolint:staticcheck // legacy encrypted PEM support
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("decrypting key: %w", err)
+	}
+
+	decryptedPEM := pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: decrypted})
+	return tls.X509KeyPair(certPEM, decryptedPEM)
 }
 
 // DefaultSupportedParameters is used when a model does not specify supported_parameters.
