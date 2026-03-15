@@ -17,6 +17,7 @@ import (
 	"agentic/internal/config"
 	"agentic/internal/rag"
 	"agentic/internal/server"
+	"agentic/internal/tools"
 	"agentic/pkg/db/opensearch"
 
 	adkagent "google.golang.org/adk/agent"
@@ -25,7 +26,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-type agentBuilder func(*config.Config, *config.AgentConfig, *rag.Client) (adkagent.Agent, error)
+type agentBuilder func(*config.Config, *config.AgentConfig, tools.Deps) (adkagent.Agent, error)
 
 var builders = map[string]agentBuilder{
 	"basic":         basic.NewAgent,
@@ -77,6 +78,14 @@ func main() {
 	cfg.Agents = agentsCfg
 	logger.Info().Strs("agents", agentsCfg.AgentIDs()).Msg("agents config loaded")
 
+	ragCfg, err := config.LoadRAG(filepath.Join(configDir, "rag.yaml"))
+	if err != nil {
+		logger.Warn().Err(err).Msg("rag.yaml not found, using defaults")
+	} else {
+		cfg.RAG = ragCfg
+		logger.Info().Str("embedding_model", ragCfg.EmbeddingModel).Int("top_k", ragCfg.TopK).Msg("rag config loaded")
+	}
+
 	// Initialize OpenSearch client
 	osClient := opensearch.New(opensearch.Config{
 		URL:      cfg.OpenSearchURL,
@@ -95,7 +104,22 @@ func main() {
 		}
 	}
 
-	ragClient := rag.NewClient(osClient)
+	ragClient := rag.NewClient(osClient, cfg)
+	deps := tools.Deps{
+		RAGClient: ragClient,
+		OSClient:  osClient,
+	}
+
+	hitlStore, err := agent.NewHITLStore(cfg, logger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to create HITL store")
+	}
+
+	sessionService, err := agent.NewSessionService(cfg, logger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to create session service")
+	}
+
 	registry := agent.NewRegistry()
 
 	for i := range agentsCfg.Agents {
@@ -111,13 +135,13 @@ func main() {
 			continue
 		}
 
-		rootAgent, buildErr := build(cfg, agentCfg, ragClient)
+		rootAgent, buildErr := build(cfg, agentCfg, deps)
 		if buildErr != nil {
 			logger.Error().Err(buildErr).Str("agent", agentCfg.ID).Msg("failed to build agent, skipping")
 			continue
 		}
 
-		core, coreErr := agent.NewCoreWithAgent(cfg, agentCfg, rootAgent, logger)
+		core, coreErr := agent.NewCoreWithAgent(cfg, agentCfg, rootAgent, hitlStore, sessionService, logger)
 		if coreErr != nil {
 			logger.Error().Err(coreErr).Str("agent", agentCfg.ID).Msg("failed to create agent core, skipping")
 			continue

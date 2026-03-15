@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agentic/internal/chat"
+	"agentic/internal/config"
 	"agentic/internal/handler"
 	"agentic/internal/rag"
 	"agentic/internal/types"
@@ -198,7 +199,7 @@ func TestAugmentMessages(t *testing.T) {
 		{Role: "user", Content: "What was our revenue performance in Q4?"},
 	}
 
-	augmented := rag.AugmentMessages(context.Background(), osClient, messages, logger)
+	augmented := rag.AugmentMessages(context.Background(), &config.Config{}, osClient, messages, logger)
 
 	if len(augmented) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(augmented))
@@ -231,7 +232,7 @@ func TestAugmentMessages_NilClient(t *testing.T) {
 	}
 
 	// Should be a no-op, not panic
-	result := rag.AugmentMessages(context.Background(), nil, messages, logger)
+	result := rag.AugmentMessages(context.Background(), &config.Config{}, nil, messages, logger)
 	if result[0].Content != "test query" {
 		t.Error("nil client should return messages unchanged")
 	}
@@ -332,7 +333,7 @@ func TestRAGWithPromptTemplate(t *testing.T) {
 	messages = chat.ApplyPromptTemplate(context.Background(), osClient, "prompt-researcher", messages, logger)
 
 	// Then RAG augmentation
-	messages = rag.AugmentMessages(context.Background(), osClient, messages, logger)
+	messages = rag.AugmentMessages(context.Background(), &config.Config{}, osClient, messages, logger)
 
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(messages))
@@ -376,7 +377,7 @@ func TestPromptsCRUD(t *testing.T) {
 		t.Fatalf("create: status %d, body: %s", w.Code, w.Body.String())
 	}
 
-	var created handler.Prompt
+	var created types.Prompt
 	json.NewDecoder(w.Body).Decode(&created)
 	promptID := created.ID
 	t.Logf("created prompt: %s", promptID)
@@ -397,7 +398,7 @@ func TestPromptsCRUD(t *testing.T) {
 		t.Fatalf("get: status %d", w.Code)
 	}
 
-	var fetched handler.Prompt
+	var fetched types.Prompt
 	json.NewDecoder(w.Body).Decode(&fetched)
 	if fetched.Template != "You are a {{role}}. Help with {{task}}." {
 		t.Errorf("template mismatch: %q", fetched.Template)
@@ -422,7 +423,7 @@ func TestPromptsCRUD(t *testing.T) {
 	// Verify update
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, httptest.NewRequest("GET", "/v1/prompts/"+promptID, nil))
-	var updated handler.Prompt
+	var updated types.Prompt
 	json.NewDecoder(w.Body).Decode(&updated)
 	if updated.Version != 2 {
 		t.Errorf("version: expected 2, got %d", updated.Version)

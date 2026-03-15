@@ -3,7 +3,7 @@ package triage
 import (
 	"agentic/agents/shared"
 	"agentic/internal/config"
-	"agentic/internal/rag"
+	"agentic/internal/tools"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/workflowagents/parallelagent"
@@ -19,28 +19,28 @@ import (
 //	  │   ├── incident_researcher (LLM with get_incident_context/opensearch, OutputKey: "incident_research")
 //	  │   └── severity_classifier (LLM with classify_incident, OutputKey: "severity_classification")
 //	  └── report_agent (LLM with trigger_alert, OutputKey: "triage_report")
-func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *rag.Client) (agent.Agent, error) {
-	issueExtractor, err := shared.RequireSubAgent(cfg, agentCfg, "issue_extractor", ragClient)
+func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps) (agent.Agent, error) {
+	issueExtractor, err := shared.RequireSubAgent(cfg, agentCfg, "issue_extractor", deps)
 	if err != nil {
 		return nil, err
 	}
 
-	keywordAnalyst, err := shared.RequireSubAgent(cfg, agentCfg, "keyword_analyst", ragClient)
+	keywordAnalyst, err := shared.RequireSubAgent(cfg, agentCfg, "keyword_analyst", deps)
 	if err != nil {
 		return nil, err
 	}
 
-	incidentResearcher, err := shared.RequireSubAgent(cfg, agentCfg, "incident_researcher", ragClient)
+	incidentResearcher, err := shared.RequireSubAgent(cfg, agentCfg, "incident_researcher", deps)
 	if err != nil {
 		return nil, err
 	}
 
-	severityClassifier, err := shared.RequireSubAgent(cfg, agentCfg, "severity_classifier", ragClient)
+	severityClassifier, err := shared.RequireSubAgent(cfg, agentCfg, "severity_classifier", deps)
 	if err != nil {
 		return nil, err
 	}
 
-	reportAgent, err := shared.RequireSubAgent(cfg, agentCfg, "report_agent", ragClient)
+	reportAgent, err := shared.RequireSubAgent(cfg, agentCfg, "report_agent", deps)
 	if err != nil {
 		return nil, err
 	}

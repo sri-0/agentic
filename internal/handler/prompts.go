@@ -5,32 +5,19 @@ import (
 	"net/http"
 	"time"
 
+	"agentic/internal/types"
 	"agentic/pkg/db/opensearch"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog"
 )
 
-// ── Prompt types ────────────────────────────────────────────────────────────
-
-type Prompt struct {
-	ID          string   `json:"id,omitempty"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Template    string   `json:"template"`
-	Variables   []string `json:"variables"`
-	Tags        []string `json:"tags"`
-	Version     int      `json:"version"`
-	CreatedAt   string   `json:"created_at,omitempty"`
-	UpdatedAt   string   `json:"updated_at,omitempty"`
-}
-
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 // PromptsCreate handles POST /v1/prompts.
 func PromptsCreate(os *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var p Prompt
+		var p types.Prompt
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 			return
@@ -80,7 +67,7 @@ func PromptsGet(os *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 			return
 		}
 
-		var p Prompt
+		var p types.Prompt
 		if err := json.Unmarshal(hit.Source, &p); err != nil {
 			http.Error(w, `{"error":"parse error"}`, http.StatusInternalServerError)
 			return
@@ -97,7 +84,7 @@ func PromptsUpdate(os *opensearch.Client, logger zerolog.Logger) http.HandlerFun
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := mux.Vars(r)["id"]
 
-		var p Prompt
+		var p types.Prompt
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 			return
@@ -185,9 +172,9 @@ func PromptsList(os *opensearch.Client, logger zerolog.Logger) http.HandlerFunc 
 			return
 		}
 
-		prompts := make([]Prompt, 0, len(resp.Hits.Hits))
+		prompts := make([]types.Prompt, 0, len(resp.Hits.Hits))
 		for _, hit := range resp.Hits.Hits {
-			var p Prompt
+			var p types.Prompt
 			if err := json.Unmarshal(hit.Source, &p); err != nil {
 				continue
 			}

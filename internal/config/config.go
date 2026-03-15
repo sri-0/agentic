@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	pkgvalkey "agentic/pkg/db/valkey"
+
 	"github.com/sethvargo/go-envconfig"
 )
 
@@ -19,9 +21,14 @@ type Config struct {
 	OpenSearchUsername  string `env:"OPENSEARCH_USERNAME"`
 	OpenSearchPassword  string `env:"OPENSEARCH_PASSWORD"`
 
+	Valkey       *pkgvalkey.Config `env:",noinit"`
+	HITLStore    string           `env:"HITL_STORE,default=memory"`    // "memory" or "valkey"
+	SessionStore string           `env:"SESSION_STORE,default=memory"` // "memory" or "valkey"
+
 	// Loaded from YAML files
 	Models *ModelsConfig
 	Agents *AgentsConfig
+	RAG    *RAGConfig
 }
 
 func Load(ctx context.Context) (*Config, error) {

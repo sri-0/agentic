@@ -656,6 +656,16 @@ providers:
           instruct_type: deepseek
 
       # ── Embedding Models ──────────────────────────────────────────────
+      - id: intfloat/multilingual-e5-large
+        type: embedding
+        name: Multilingual E5 Large
+        owned_by: intfloat
+        description: High-quality multilingual embedding model. 1024 dimensions.
+        context_length: 512
+        architecture:
+          input_modalities: [text]
+          output_modalities: [embedding]
+
       - id: openai/text-embedding-3-large
         type: embedding
         name: Text Embedding 3 Large

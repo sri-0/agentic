@@ -1,0 +1,14 @@
+embedding_model: intfloat/multilingual-e5-large
+top_k: 5
+index: embeddings
+
+# Prompt template for injecting retrieved context into the user message.
+# Available placeholders: {{context}}, {{query}}
+prompt: |
+  Use the following retrieved context to help answer the question. Cite sources by number when relevant.
+
+  ---
+  {{context}}
+  ---
+
+  {{query}}

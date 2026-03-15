@@ -28,24 +28,18 @@ func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 			req.Action = "denied"
 		}
 
-		// Find the right core for this thread. Try all registered cores.
-		var core *agent.Core
-		for _, id := range registry.IDs() {
-			c := registry.Get(id)
-			if pending := c.Interrupts.Get(req.ThreadID); pending != nil {
-				core = c
-				break
-			}
-		}
-
-		if core == nil {
+		// Look up the pending interrupt from the shared store (any core can read it).
+		anyCore := registry.Get(registry.IDs()[0])
+		pending, err := anyCore.Interrupts.Get(req.ThreadID)
+		if err != nil || pending == nil {
 			http.Error(w, `{"error": "no pending confirmation for this thread"}`, http.StatusNotFound)
 			return
 		}
 
-		pending := core.Interrupts.Get(req.ThreadID)
-		if pending == nil {
-			http.Error(w, `{"error": "no pending confirmation for this thread"}`, http.StatusNotFound)
+		// Use the stored agent ID to find the correct core.
+		core := registry.Get(pending.AgentID)
+		if core == nil {
+			http.Error(w, fmt.Sprintf(`{"error": "agent %s not found"}`, pending.AgentID), http.StatusNotFound)
 			return
 		}
 
@@ -53,13 +47,15 @@ func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 
 		logger.Info().
 			Str("thread_id", req.ThreadID).
+			Str("agent_id", pending.AgentID).
 			Str("action", req.Action).
 			Str("tool", pending.ToolName).
+			Str("tool_call_id", pending.ToolCallID).
 			Bool("approved", approved).
-			Msg("resuming agent")
+			Msg("resume: dispatching HITL response")
 
 		// Clear the pending interrupt
-		core.Interrupts.Clear(req.ThreadID)
+		_ = core.Interrupts.Clear(req.ThreadID)
 
 		// Resume via the runner with the confirmation response
 		agent.StreamResumeRun(r.Context(), w, core, req.ThreadID, pending, approved, logger)

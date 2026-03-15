@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agentic/internal/config"
+	"agentic/internal/hitl"
 
 	"github.com/rs/zerolog"
 	adkagent "google.golang.org/adk/agent"
@@ -49,7 +50,7 @@ func newTestCoreWithOutput(t *testing.T, customAgent adkagent.Agent, outputAgent
 	return &Core{
 		Runner:         r,
 		SessionManager: sm,
-		Interrupts:     NewInterruptStore(),
+		Interrupts:     hitl.NewInMemoryStore(),
 		AgentID:        "test-agent",
 		OutputAgent:    outputAgent,
 		Config: &config.Config{
@@ -252,7 +253,7 @@ func TestStreamAgentRun_SimpleTextResponse(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Hi"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-1", messages, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-1", messages, nil, zerolog.Nop())
 
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
@@ -312,7 +313,7 @@ func TestStreamAgentRun_ToolCallAndResult(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Show me all products"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-2", messages, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-2", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -382,7 +383,7 @@ func TestStreamAgentRun_HITLInterrupt(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Insert a new user"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-hitl", messages, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-hitl", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -422,7 +423,7 @@ func TestStreamAgentRun_HITLInterrupt(t *testing.T) {
 	}
 
 	// Verify interrupt was stored
-	pending := core.Interrupts.Get("thread-hitl")
+	pending, _ := core.Interrupts.Get("thread-hitl")
 	if pending == nil {
 		t.Fatal("expected pending interrupt to be stored")
 	}
@@ -445,7 +446,7 @@ func TestStreamAgentRun_StreamingTimestamps(t *testing.T) {
 	w := httptest.NewRecorder()
 	start := time.Now()
 	StreamAgentRun(context.Background(), w, core, "thread-ts",
-		[]types.ChatMessage{{Role: "user", Content: "test"}}, zerolog.Nop())
+		[]types.ChatMessage{{Role: "user", Content: "test"}}, nil, zerolog.Nop())
 	elapsed := time.Since(start)
 
 	events := parseSSEEvents(w.Body.String())
@@ -480,7 +481,7 @@ func TestStreamResumeRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pending := &PendingInterrupt{
+	pending := &hitl.PendingInterrupt{
 		ConfirmationCallID: "confirm_r1",
 		ToolCallID:         "call_r1",
 		ToolName:           "write_database",
@@ -647,7 +648,7 @@ func TestStreamAgentRun_AgentEventRouting(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "research something"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-routing", messages, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-routing", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -729,7 +730,7 @@ func TestStreamAgentRun_FlatAgentNoRouting(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Hi"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-flat", messages, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-flat", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -760,18 +761,18 @@ func TestStreamAgentRun_FlatAgentNoRouting(t *testing.T) {
 }
 
 func TestInterruptStore(t *testing.T) {
-	store := NewInterruptStore()
+	store := hitl.NewInMemoryStore()
 
-	if got := store.Get("thread-1"); got != nil {
+	if got, _ := store.Get("thread-1"); got != nil {
 		t.Errorf("expected nil, got %v", got)
 	}
 
-	store.Set("thread-1", &PendingInterrupt{
+	_ = store.Set("thread-1", &hitl.PendingInterrupt{
 		ConfirmationCallID: "c1",
 		ToolCallID:         "t1",
 		ToolName:           "write_database",
 	})
-	got := store.Get("thread-1")
+	got, _ := store.Get("thread-1")
 	if got == nil {
 		t.Fatal("expected pending interrupt")
 	}
@@ -779,8 +780,8 @@ func TestInterruptStore(t *testing.T) {
 		t.Errorf("expected t1, got %s", got.ToolCallID)
 	}
 
-	store.Clear("thread-1")
-	if got := store.Get("thread-1"); got != nil {
+	_ = store.Clear("thread-1")
+	if got, _ := store.Get("thread-1"); got != nil {
 		t.Errorf("expected nil after clear, got %v", got)
 	}
 }

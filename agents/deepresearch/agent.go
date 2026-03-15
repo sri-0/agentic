@@ -5,7 +5,7 @@ import (
 
 	"agentic/agents/shared"
 	"agentic/internal/config"
-	"agentic/internal/rag"
+	"agentic/internal/tools"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/workflowagents/loopagent"
@@ -36,10 +36,12 @@ import (
 // propagates escalation through LoopAgent to the parent SequentialAgent, which would
 // stop gap_analyst and report_refinement from running. The report_refinement loop uses
 // LoopAgent safely because it's the last step in the pipeline.
-func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *rag.Client) (agent.Agent, error) {
+func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps) (agent.Agent, error) {
+	ragClient := deps.RAGClient
+
 	// ── Planning ──────────────────────────────────────────────────────────
 
-	planner, err := shared.RequireSubAgent(cfg, agentCfg, "research_planner", ragClient)
+	planner, err := shared.RequireSubAgent(cfg, agentCfg, "research_planner", deps)
 	if err != nil {
 		return nil, err
 	}
@@ -56,12 +58,12 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *rag.C
 
 	// ── Document analysis loop (custom agent) ────────────────────────────
 
-	docAnalyst, err := shared.RequireSubAgent(cfg, agentCfg, "document_analyst", ragClient)
+	docAnalyst, err := shared.RequireSubAgent(cfg, agentCfg, "document_analyst", deps)
 	if err != nil {
 		return nil, err
 	}
 
-	dataAnalyst, err := shared.RequireSubAgent(cfg, agentCfg, "data_analyst", ragClient)
+	dataAnalyst, err := shared.RequireSubAgent(cfg, agentCfg, "data_analyst", deps)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +78,7 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *rag.C
 		return nil, fmt.Errorf("parallel_analysis: %w", err)
 	}
 
-	findingsSummarizer, err := shared.RequireSubAgent(cfg, agentCfg, "findings_summarizer", ragClient)
+	findingsSummarizer, err := shared.RequireSubAgent(cfg, agentCfg, "findings_summarizer", deps)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +96,7 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *rag.C
 
 	// ── Gap analysis ─────────────────────────────────────────────────────
 
-	gapAnalyst, err := shared.RequireSubAgent(cfg, agentCfg, "gap_analyst", ragClient)
+	gapAnalyst, err := shared.RequireSubAgent(cfg, agentCfg, "gap_analyst", deps)
 	if err != nil {
 		return nil, err
 	}
@@ -103,12 +105,12 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *rag.C
 	// LoopAgent is safe here — it's the last step, so escalation doesn't
 	// cut off subsequent agents.
 
-	reportGen, err := shared.RequireSubAgent(cfg, agentCfg, "report_generator", ragClient)
+	reportGen, err := shared.RequireSubAgent(cfg, agentCfg, "report_generator", deps)
 	if err != nil {
 		return nil, err
 	}
 
-	reportCritic, err := shared.RequireSubAgent(cfg, agentCfg, "report_critic", ragClient)
+	reportCritic, err := shared.RequireSubAgent(cfg, agentCfg, "report_critic", deps)
 	if err != nil {
 		return nil, err
 	}

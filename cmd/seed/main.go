@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"math"
-	"math/rand"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"time"
 
@@ -28,142 +31,148 @@ func main() {
 		logger.Fatal().Err(err).Msg("opensearch not reachable")
 	}
 
+	// Delete and recreate embeddings index (dimension may have changed)
+	logger.Info().Msg("recreating embeddings index for 1024-dim E5 vectors")
+	client.DeleteIndex(ctx, opensearch.IndexEmbeddings)
+
 	if err := opensearch.EnsureIndices(ctx, client); err != nil {
 		logger.Fatal().Err(err).Msg("failed to ensure indices")
 	}
 
-	seedEmbeddings(ctx, client, logger)
+	apiKey := os.Getenv("LLM_API_KEY")
+	if apiKey == "" {
+		logger.Fatal().Msg("LLM_API_KEY is required (OpenRouter API key)")
+	}
+
+	seedEmbeddings(ctx, client, apiKey, logger)
 	seedPrompts(ctx, client, logger)
 	seedThreads(ctx, client, logger)
 
 	logger.Info().Msg("seed complete")
 }
 
-func seedEmbeddings(ctx context.Context, client *opensearch.Client, logger zerolog.Logger) {
-	docs := []struct {
-		id  string
-		doc map[string]any
-	}{
+type embeddingDoc struct {
+	id   string
+	text string
+	meta map[string]any
+}
+
+func seedEmbeddings(ctx context.Context, client *opensearch.Client, apiKey string, logger zerolog.Logger) {
+	docs := []embeddingDoc{
 		// Q4 Performance Report - 3 chunks
-		{id: "perf-q4-001", doc: map[string]any{
+		{id: "perf-q4-001", text: "Revenue exceeded targets by 12% in Q4 2024. The enterprise segment grew 24% year-over-year, driven by expansion deals and new logo acquisitions. Cloud Suite became the top-selling product line with $95K in quarterly revenue.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-perf-q4", "chunk_id": 0,
 			"title": "Q4 2024 Business Performance Report", "source": "reports/q4-2024-performance.pdf",
 			"author": "Finance Team", "date": "2025-01-15", "classification": "internal",
-			"text":   "Revenue exceeded targets by 12% in Q4 2024. The enterprise segment grew 24% year-over-year, driven by expansion deals and new logo acquisitions. Cloud Suite became the top-selling product line with $95K in quarterly revenue.",
-			"vector": randVec(1536, 1),
 		}},
-		{id: "perf-q4-002", doc: map[string]any{
+		{id: "perf-q4-002", text: "Total MRR reached $284K with 14,820 active users across all tiers. Customer acquisition cost decreased by 18% while lifetime value increased by 22%. The sales team closed 47 enterprise deals in Q4, up from 31 in Q3.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-perf-q4", "chunk_id": 1,
 			"title": "Q4 2024 Business Performance Report", "source": "reports/q4-2024-performance.pdf",
 			"author": "Finance Team", "date": "2025-01-15", "classification": "internal",
-			"text":   "Total MRR reached $284K with 14,820 active users across all tiers. Customer acquisition cost decreased by 18% while lifetime value increased by 22%. The sales team closed 47 enterprise deals in Q4, up from 31 in Q3.",
-			"vector": randVec(1536, 2),
 		}},
-		{id: "perf-q4-003", doc: map[string]any{
+		{id: "perf-q4-003", text: "Operating margin improved to 23%, up from 19% in Q3. R&D spending remained at 28% of revenue. The company ended Q4 with $12.4M in cash reserves, providing 18 months of runway at current burn rate.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-perf-q4", "chunk_id": 2,
 			"title": "Q4 2024 Business Performance Report", "source": "reports/q4-2024-performance.pdf",
 			"author": "Finance Team", "date": "2025-01-15", "classification": "internal",
-			"text":   "Operating margin improved to 23%, up from 19% in Q3. R&D spending remained at 28% of revenue. The company ended Q4 with $12.4M in cash reserves, providing 18 months of runway at current burn rate.",
-			"vector": randVec(1536, 3),
 		}},
 
 		// Competitive Analysis - 2 chunks
-		{id: "competitive-001", doc: map[string]any{
+		{id: "competitive-001", text: "Market share grew from 19.1% to 23.4% in 2024. Three main competitors: Acme Corp holds 31% market share, TechCo at 18%, and NovaSoft at 12%. Our key differentiator is the AI-first approach and deep enterprise integrations.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-competitive", "chunk_id": 0,
 			"title": "Competitive Landscape Analysis 2024", "source": "research/competitive-analysis-2024.pdf",
 			"author": "Strategy Team", "date": "2024-12-20", "classification": "confidential",
-			"text":   "Market share grew from 19.1% to 23.4% in 2024. Three main competitors: Acme Corp holds 31% market share, TechCo at 18%, and NovaSoft at 12%. Our key differentiator is the AI-first approach and deep enterprise integrations.",
-			"vector": randVec(1536, 4),
 		}},
-		{id: "competitive-002", doc: map[string]any{
+		{id: "competitive-002", text: "TechCo launched a competing AI product in Q3 but lacks enterprise features. NovaSoft is pivoting to vertical solutions. Acme Corp remains the largest threat with their established customer base and recent $50M funding round.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-competitive", "chunk_id": 1,
 			"title": "Competitive Landscape Analysis 2024", "source": "research/competitive-analysis-2024.pdf",
 			"author": "Strategy Team", "date": "2024-12-20", "classification": "confidential",
-			"text":   "TechCo launched a competing AI product in Q3 but lacks enterprise features. NovaSoft is pivoting to vertical solutions. Acme Corp remains the largest threat with their established customer base and recent $50M funding round.",
-			"vector": randVec(1536, 5),
 		}},
 
 		// Product Roadmap - 2 chunks
-		{id: "roadmap-001", doc: map[string]any{
+		{id: "roadmap-001", text: "Q1 2025: AI assistant integration with RAG pipeline and vector search. Q2: API-first redesign with GraphQL federation. Q3: Mobile apps for iOS and Android with offline capabilities.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-roadmap", "chunk_id": 0,
 			"title": "Product Roadmap 2025", "source": "product/roadmap-2025.md",
 			"author": "Product Team", "date": "2025-01-10", "classification": "internal",
-			"text":   "Q1 2025: AI assistant integration with RAG pipeline and vector search. Q2: API-first redesign with GraphQL federation. Q3: Mobile apps for iOS and Android with offline capabilities.",
-			"vector": randVec(1536, 6),
 		}},
-		{id: "roadmap-002", doc: map[string]any{
+		{id: "roadmap-002", text: "Q4 2025: Enterprise SSO with SAML and OIDC, SCIM provisioning, and audit logging. Key dependencies: infrastructure migration to Kubernetes must complete by Q2. Headcount plan: 8 new engineers across platform and AI teams.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-roadmap", "chunk_id": 1,
 			"title": "Product Roadmap 2025", "source": "product/roadmap-2025.md",
 			"author": "Product Team", "date": "2025-01-10", "classification": "internal",
-			"text":   "Q4 2025: Enterprise SSO with SAML and OIDC, SCIM provisioning, and audit logging. Key dependencies: infrastructure migration to Kubernetes must complete by Q2. Headcount plan: 8 new engineers across platform and AI teams.",
-			"vector": randVec(1536, 7),
 		}},
 
 		// Customer Satisfaction
-		{id: "csat-001", doc: map[string]any{
+		{id: "csat-001", text: "NPS score improved from 64 to 67 in Q4. Enterprise customers report 94% satisfaction rate. Top feature requests: better API documentation (42%), mobile access (38%), and SSO support (35%). Churn rate decreased to 2.1% from 2.8%.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-csat", "chunk_id": 0,
 			"title": "Customer Satisfaction Report Q4 2024", "source": "reports/customer-satisfaction-q4.pdf",
 			"author": "Customer Success", "date": "2025-01-08", "classification": "internal",
-			"text":   "NPS score improved from 64 to 67 in Q4. Enterprise customers report 94% satisfaction rate. Top feature requests: better API documentation (42%), mobile access (38%), and SSO support (35%). Churn rate decreased to 2.1% from 2.8%.",
-			"vector": randVec(1536, 8),
 		}},
 
 		// AI Market Trends
-		{id: "ai-trends-001", doc: map[string]any{
+		{id: "ai-trends-001", text: "The enterprise AI market is projected to reach $150B by 2027, growing at 35% CAGR. Key trends: agentic AI workflows replacing traditional automation, RAG-based knowledge systems for enterprise search, and AI-native developer tools gaining mainstream adoption.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-ai-trends", "chunk_id": 0,
 			"title": "AI Market Trends 2025", "source": "research/ai-market-trends-2025.pdf",
 			"author": "Research Team", "date": "2025-02-01", "classification": "public",
-			"text":   "The enterprise AI market is projected to reach $150B by 2027, growing at 35% CAGR. Key trends: agentic AI workflows replacing traditional automation, RAG-based knowledge systems for enterprise search, and AI-native developer tools gaining mainstream adoption.",
-			"vector": randVec(1536, 9),
 		}},
 
 		// Security Audit
-		{id: "security-001", doc: map[string]any{
+		{id: "security-001", text: "Zero critical vulnerabilities found in annual penetration test. SOC 2 Type II certification renewed. Implemented zero-trust architecture across all services. Three medium-severity issues identified and remediated within 48 hours.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-security", "chunk_id": 0,
 			"title": "Security Audit Report 2024", "source": "security/audit-2024.pdf",
 			"author": "Security Team", "date": "2024-12-15", "classification": "confidential",
-			"text":   "Zero critical vulnerabilities found in annual penetration test. SOC 2 Type II certification renewed. Implemented zero-trust architecture across all services. Three medium-severity issues identified and remediated within 48 hours.",
-			"vector": randVec(1536, 10),
 		}},
 
 		// Engineering Metrics
-		{id: "eng-metrics-001", doc: map[string]any{
+		{id: "eng-metrics-001", text: "Sprint velocity increased 15% to an average of 42 story points. Deployment frequency: 12 deploys per week (up from 8). Mean time to recovery: 14 minutes. Test coverage at 87%. Tech debt ratio decreased from 22% to 18%.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-eng-metrics", "chunk_id": 0,
 			"title": "Engineering Team Metrics Q4 2024", "source": "engineering/metrics-q4.pdf",
 			"author": "Engineering", "date": "2025-01-12", "classification": "internal",
-			"text":   "Sprint velocity increased 15% to an average of 42 story points. Deployment frequency: 12 deploys per week (up from 8). Mean time to recovery: 14 minutes. Test coverage at 87%. Tech debt ratio decreased from 22% to 18%.",
-			"vector": randVec(1536, 11),
 		}},
 
 		// Hiring Plan
-		{id: "hiring-001", doc: map[string]any{
+		{id: "hiring-001", text: "Planned headcount growth from 82 to 120 employees by end of 2025. Priority roles: 8 engineers (platform, AI, mobile), 4 sales (enterprise AEs), 3 customer success, 2 product managers. Total hiring budget: $4.2M including recruiter fees.", meta: map[string]any{
 			"project": "acme", "doc_id": "doc-hiring", "chunk_id": 0,
 			"title": "2025 Hiring Plan", "source": "hr/hiring-plan-2025.pdf",
 			"author": "People Team", "date": "2025-01-20", "classification": "internal",
-			"text":   "Planned headcount growth from 82 to 120 employees by end of 2025. Priority roles: 8 engineers (platform, AI, mobile), 4 sales (enterprise AEs), 3 customer success, 2 product managers. Total hiring budget: $4.2M including recruiter fees.",
-			"vector": randVec(1536, 12),
 		}},
 
-		// Different project - Beta
-		{id: "beta-001", doc: map[string]any{
+		// Beta Project
+		{id: "beta-001", text: "The beta project implements a real-time data pipeline using Apache Kafka for event streaming and Apache Flink for stream processing. Target throughput: 1M events/second with sub-100ms P99 latency. Storage layer uses ClickHouse for analytics.", meta: map[string]any{
 			"project": "beta-project", "doc_id": "doc-beta-arch", "chunk_id": 0,
 			"title": "Beta Project Architecture", "source": "projects/beta-architecture.md",
 			"author": "Engineering", "date": "2025-02-15", "classification": "internal",
-			"text":   "The beta project implements a real-time data pipeline using Apache Kafka for event streaming and Apache Flink for stream processing. Target throughput: 1M events/second with sub-100ms P99 latency. Storage layer uses ClickHouse for analytics.",
-			"vector": randVec(1536, 13),
 		}},
-		{id: "beta-002", doc: map[string]any{
+		{id: "beta-002", text: "Beta project is on track for Q2 delivery. Kafka cluster deployed with 3 brokers. Flink jobs processing 500K events/second in staging. Remaining work: ClickHouse schema optimization, monitoring dashboards, and load testing at full scale.", meta: map[string]any{
 			"project": "beta-project", "doc_id": "doc-beta-status", "chunk_id": 0,
 			"title": "Beta Project Status Update", "source": "projects/beta-status-march.md",
 			"author": "Engineering", "date": "2025-03-01", "classification": "internal",
-			"text":   "Beta project is on track for Q2 delivery. Kafka cluster deployed with 3 brokers. Flink jobs processing 500K events/second in staging. Remaining work: ClickHouse schema optimization, monitoring dashboards, and load testing at full scale.",
-			"vector": randVec(1536, 14),
 		}},
 	}
 
+	// Collect all texts to embed in a single batch
+	texts := make([]string, len(docs))
+	for i, d := range docs {
+		texts[i] = d.text
+	}
+
+	logger.Info().Int("docs", len(docs)).Msg("embedding documents via intfloat/multilingual-e5-large")
+
+	vectors, err := embedBatch(apiKey, texts)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to embed documents")
+	}
+
+	logger.Info().Int("vectors", len(vectors)).Int("dims", len(vectors[0])).Msg("embeddings received")
+
 	count := 0
-	for _, d := range docs {
-		_, err := client.IndexDocument(ctx, opensearch.IndexEmbeddings, d.id, d.doc)
+	for i, d := range docs {
+		doc := make(map[string]any)
+		for k, v := range d.meta {
+			doc[k] = v
+		}
+		doc["text"] = d.text
+		doc["vector"] = vectors[i]
+
+		_, err := client.IndexDocument(ctx, opensearch.IndexEmbeddings, d.id, doc)
 		if err != nil {
 			logger.Error().Err(err).Str("id", d.id).Msg("failed to index embedding")
 			continue
@@ -172,7 +181,61 @@ func seedEmbeddings(ctx context.Context, client *opensearch.Client, logger zerol
 	}
 
 	client.Refresh(ctx, opensearch.IndexEmbeddings)
-	logger.Info().Int("count", count).Msg("seeded embeddings")
+	logger.Info().Int("count", count).Msg("seeded embeddings with E5 vectors")
+}
+
+func embedBatch(apiKey string, texts []string) ([][]float64, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"model": "intfloat/multilingual-e5-large",
+		"input": texts,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://openrouter.ai/api/v1/embeddings", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var embResp struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+			Index     int       `json:"index"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &embResp); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+
+	if len(embResp.Data) != len(texts) {
+		return nil, fmt.Errorf("expected %d embeddings, got %d", len(texts), len(embResp.Data))
+	}
+
+	// Sort by index to match input order
+	vectors := make([][]float64, len(texts))
+	for _, d := range embResp.Data {
+		vectors[d.Index] = d.Embedding
+	}
+
+	return vectors, nil
 }
 
 func seedPrompts(ctx context.Context, client *opensearch.Client, logger zerolog.Logger) {
@@ -346,19 +409,4 @@ func seedThreads(ctx context.Context, client *opensearch.Client, logger zerolog.
 	client.Refresh(ctx, opensearch.IndexThreads)
 	client.Refresh(ctx, opensearch.IndexMessages)
 	logger.Info().Int("threads", count).Int("messages", msgCount).Msg("seeded threads")
-}
-
-func randVec(dim int, seed int64) []float64 {
-	r := rand.New(rand.NewSource(seed))
-	v := make([]float64, dim)
-	var norm float64
-	for i := range v {
-		v[i] = r.NormFloat64()
-		norm += v[i] * v[i]
-	}
-	norm = math.Sqrt(norm)
-	for i := range v {
-		v[i] /= norm
-	}
-	return v
 }

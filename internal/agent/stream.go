@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
+	"agentic/internal/chat"
 	"agentic/internal/sse"
 	"agentic/internal/types"
+	"agentic/internal/hitl"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -17,8 +20,8 @@ import (
 )
 
 // StreamAgentRun uses the ADK runner with StreamingModeSSE to execute the
-// agent loop, mapping ADK events to OpenAI-compatible SSE chunks.
-func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, logger zerolog.Logger) {
+// agent loop. If saver is non-nil, user and assistant messages are persisted.
+func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -27,29 +30,35 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
 	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
 
-	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Int("messages", len(messages)).Msg("stream start")
+	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Int("messages", len(messages)).Msg("stream: request received")
 
 	writeProgress(w, "planning", "Analyzing...")
 
 	// Ensure session exists
 	if err := core.SessionManager.GetOrCreate(ctx, threadID); err != nil {
-		logger.Error().Err(err).Str("thread_id", threadID).Msg("session create failed")
+		logger.Error().Err(err).Str("thread_id", threadID).Msg("stream: session create failed")
 		writeProgress(w, "error", "Failed to create session")
 		sse.WriteSSE(w, cb.Finish("stop"))
 		sse.WriteDone(w)
 		return
 	}
+	logger.Info().Str("thread_id", threadID).Msg("stream: session ready")
 
 	// Build the user message from the last message (ADK session stores history)
 	lastMsg := messages[len(messages)-1]
 	userContent := genai.NewContentFromText(lastMsg.Content, genai.RoleUser)
 
-	streamEvents(ctx, w, core, threadID, userContent, cb, logger)
+	// Persist user message
+	if saver != nil {
+		saver.SaveUserMessage(ctx, threadID, lastMsg.Content)
+	}
+
+	streamEvents(ctx, w, core, threadID, userContent, cb, saver, logger)
 }
 
 // StreamResumeRun handles the resume flow after HITL approval/denial.
 // It sends the confirmation FunctionResponse back through the runner.
-func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, pending *PendingInterrupt, approved bool, logger zerolog.Logger) {
+func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, pending *hitl.PendingInterrupt, approved bool, logger zerolog.Logger) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -57,6 +66,18 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 
 	requestID := fmt.Sprintf("chatcmpl-resume-%s", uuid.New().String()[:12])
 	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
+
+	action := "denied"
+	if approved {
+		action = "approved"
+	}
+	logger.Info().
+		Str("thread_id", threadID).
+		Str("agent_id", core.AgentID).
+		Str("tool", pending.ToolName).
+		Str("tool_call_id", pending.ToolCallID).
+		Str("action", action).
+		Msg("resume: continuing after HITL")
 
 	// Emit synthetic tool call delta so the frontend sees the tool_call
 	// before the tool_result (required by Vercel AI SDK data stream protocol).
@@ -78,21 +99,14 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 		Parts: []*genai.Part{{FunctionResponse: funcResponse}},
 	}
 
-	streamEvents(ctx, w, core, threadID, confirmContent, cb, logger)
+	streamEvents(ctx, w, core, threadID, confirmContent, cb, nil, logger)
 }
 
 // streamEvents is the shared event processing loop for both new turns and resumes.
-// For workflow agents (Sequential/Parallel/Loop), multiple sub-agents emit events.
-// We let the runner complete rather than closing on the first IsFinalResponse().
-//
-// Agent event routing:
-//   - If core.OutputAgent is set, only that agent's text goes to choices[0].delta.content.
-//     All other agents' text is routed to custom agent_event SSE events.
-//   - If core.OutputAgent is empty (flat agent), all text goes to choices[0].delta.content.
-//   - Agent transitions emit agent_progress events (agent_start/agent_done) with step tracking.
-func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, content *genai.Content, cb *sse.ChunkBuilder, logger zerolog.Logger) {
+func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, content *genai.Content, cb *sse.ChunkBuilder, saver *chat.MessageSaver, logger zerolog.Logger) {
 	toolCallIdx := int64(0)
 	hadPartialText := false
+	var outputText string // accumulates output agent text for persistence
 	step := 0
 	lastAuthor := ""
 
@@ -117,7 +131,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 	closeGroup := func() {
 		for a := range activeGroup {
 			writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", a), a, step)
-			streamLog.Debug().Str("sub_agent", a).Int("step", step).Msg("agent done")
+			streamLog.Info().Str("sub_agent", a).Int("step", step).Msg("stream: agent done")
 			// Remove from allSeen so the same agents can re-form a group
 			// in the next loop iteration (e.g. document_analyst on doc 2).
 			// The triggering agent (the one that caused the close) stays in
@@ -158,16 +172,19 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		activeGroup[author] = true
 		step++
 		writeAgentProgress(w, "agent_start", fmt.Sprintf("Running %s...", author), author, step)
-		streamLog.Info().Str("sub_agent", author).Int("step", step).Msg("agent start")
+		streamLog.Info().Str("sub_agent", author).Int("step", step).Msg("stream: agent start")
 	}
 
-	streamLog.Info().Msg("starting agent run")
+	startTime := time.Now()
+	eventCount := 0
+	toolCallCount := 0
+	streamLog.Info().Msg("stream: runner started")
 
 	for event, err := range core.Runner.Run(ctx, "default", threadID, content, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeSSE,
 	}) {
 		if err != nil {
-			streamLog.Error().Err(err).Msg("runner error")
+			streamLog.Error().Err(err).Dur("elapsed", time.Since(startTime)).Msg("stream: runner error")
 			writeProgress(w, "error", fmt.Sprintf("Error: %v", err))
 			break
 		}
@@ -176,6 +193,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			continue
 		}
 
+		eventCount++
 		author := event.Author
 		transitionAgent(author)
 
@@ -185,6 +203,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 				if part.Text != "" {
 					if isOutputAgent(author) {
 						sse.WriteSSE(w, cb.TextDelta(part.Text))
+						outputText += part.Text
 					} else {
 						writeAgentEvent(w, author, "text_delta", part.Text, step)
 					}
@@ -200,6 +219,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			if part.Text != "" && !hadPartialText {
 				if isOutputAgent(author) {
 					sse.WriteSSE(w, cb.TextDelta(part.Text))
+					outputText += part.Text
 				} else {
 					writeAgentEvent(w, author, "text_delta", part.Text, step)
 				}
@@ -230,14 +250,24 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 					hint = args
 				}
 
+				streamLog.Info().
+					Str("tool", originalCall.Name).
+					Str("tool_call_id", originalCall.ID).
+					Str("hint", hint).
+					Dur("elapsed", time.Since(startTime)).
+					Msg("stream: HITL interrupt — awaiting confirmation")
+
 				// Store the pending interrupt so the resume endpoint can find it
-				core.Interrupts.Set(threadID, &PendingInterrupt{
+				if err := core.Interrupts.Set(threadID, &hitl.PendingInterrupt{
+					AgentID:            core.AgentID,
 					ConfirmationCallID: fc.ID,
 					ToolCallID:         originalCall.ID,
 					ToolName:           originalCall.Name,
 					Prompt:             hint,
 					Details:            originalCall.Args,
-				})
+				}); err != nil {
+					logger.Error().Err(err).Msg("failed to store HITL interrupt")
+				}
 
 				// Emit tool_interrupt SSE event for the frontend
 				evt := types.ToolInterruptEvent{}
@@ -256,7 +286,8 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 
 			// Regular tool call (non-confirmation) — emit delta for UI
 			if fc := part.FunctionCall; fc != nil {
-				streamLog.Info().Str("sub_agent", author).Str("tool", fc.Name).Str("call_id", fc.ID).Msg("tool call")
+				toolCallCount++
+				streamLog.Info().Str("sub_agent", author).Str("tool", fc.Name).Str("call_id", fc.ID).Int("tool_call_num", toolCallCount).Dur("elapsed", time.Since(startTime)).Msg("stream: tool call")
 				writeProgress(w, "executing", fmt.Sprintf("Running %s...", fc.Name))
 				argsJSON, _ := json.Marshal(fc.Args)
 				sse.WriteSSE(w, cb.ToolCallDelta(toolCallIdx, fc.ID, fc.Name, string(argsJSON)))
@@ -270,7 +301,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 				if fr.Name == toolconfirmation.FunctionCallName {
 					continue
 				}
-				streamLog.Debug().Str("sub_agent", author).Str("tool", fr.Name).Str("call_id", fr.ID).Msg("tool result")
+				streamLog.Info().Str("sub_agent", author).Str("tool", fr.Name).Str("call_id", fr.ID).Dur("elapsed", time.Since(startTime)).Msg("stream: tool result")
 				evt := types.ToolResultEvent{}
 				evt.ToolResult.ToolCallID = fr.ID
 				evt.ToolResult.ToolName = fr.Name
@@ -286,7 +317,18 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 	// Close remaining active agents
 	closeGroup()
 
-	streamLog.Info().Int("steps", step).Msg("agent run complete")
+	// Persist assistant message
+	if saver != nil && outputText != "" {
+		saver.SaveAssistantMessage(ctx, threadID, outputText, core.AgentID)
+	}
+
+	streamLog.Info().
+		Int("steps", step).
+		Int("events", eventCount).
+		Int("tool_calls", toolCallCount).
+		Int("output_chars", len(outputText)).
+		Dur("elapsed", time.Since(startTime)).
+		Msg("stream: agent run complete")
 
 	// Stream closes when the runner completes (all workflow agents finished)
 	sse.WriteSSE(w, cb.Finish("stop"))
