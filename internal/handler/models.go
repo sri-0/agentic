@@ -60,6 +60,8 @@ func buildModelEntry(m config.Model, fallbackCreated int64) map[string]any {
 		"type":                 string(m.Type),
 		"created":              created,
 		"owned_by":             m.OwnedBy,
+		"provider_id":          m.ProviderID,
+		"provider_name":        m.ProviderName,
 		"supported_parameters": m.EffectiveSupportedParameters(),
 		// Capability booleans
 		"vision":    m.HasCapability("vision"),

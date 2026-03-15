@@ -150,6 +150,10 @@ type Model struct {
 	Capabilities        []string      `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	SupportedParameters []string      `yaml:"supported_parameters,omitempty" json:"supported_parameters,omitempty"`
 	Architecture        *Architecture `yaml:"architecture,omitempty" json:"architecture,omitempty"`
+
+	// Populated at runtime from the parent provider — not in YAML.
+	ProviderID   string `yaml:"-" json:"provider_id,omitempty"`
+	ProviderName string `yaml:"-" json:"provider_name,omitempty"`
 }
 
 // EffectiveSupportedParameters returns the model's supported parameters,
@@ -239,11 +243,16 @@ func LoadModels(path string) (*ModelsConfig, error) {
 	return &cfg, nil
 }
 
-// AllModels returns a flat list of all models across all providers.
+// AllModels returns a flat list of all models across all providers,
+// with ProviderID and ProviderName populated from the parent provider.
 func (c *ModelsConfig) AllModels() []Model {
 	var all []Model
 	for _, p := range c.Providers {
-		all = append(all, p.Models...)
+		for _, m := range p.Models {
+			m.ProviderID = p.ID
+			m.ProviderName = p.Name
+			all = append(all, m)
+		}
 	}
 	return all
 }
