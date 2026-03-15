@@ -190,6 +190,6 @@ func TestInMemoryStore_ImplementsInterface(t *testing.T) {
 	var _ Store = (*InMemoryStore)(nil)
 }
 
-func TestRedisStore_ImplementsInterface(t *testing.T) {
-	var _ Store = (*RedisStore)(nil)
+func TestValkeyStore_ImplementsInterface(t *testing.T) {
+	var _ Store = (*ValkeyStore)(nil)
 }

@@ -4,6 +4,7 @@ package hitl
 // ADK confirmation call ID so the resume endpoint can construct the
 // FunctionResponse to send back to the runner.
 type PendingInterrupt struct {
+	AgentID            string         `json:"agent_id"`
 	ConfirmationCallID string         `json:"confirmation_call_id"`
 	ToolCallID         string         `json:"tool_call_id"`
 	ToolName           string         `json:"tool_name"`

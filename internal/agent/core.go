@@ -7,7 +7,8 @@ import (
 
 	"agentic/internal/config"
 	"agentic/internal/hitl"
-	pkgredis "agentic/pkg/db/redis"
+	pkgvalkey "agentic/pkg/db/valkey"
+	sessionvalkey "agentic/pkg/session/valkey"
 	genaiopenai "agentic/pkg/genai/openai"
 
 	"github.com/rs/zerolog"
@@ -29,26 +30,46 @@ type Core struct {
 }
 
 // NewHITLStore creates a hitl.Store based on cfg.HITLStore.
-// Set HITL_STORE=redis to use Redis (requires REDIS_HOST/REDIS_PORT). Defaults to in-memory.
+// Set HITL_STORE=valkey to use Valkey/Redis. Defaults to in-memory.
 func NewHITLStore(cfg *config.Config, logger zerolog.Logger) (hitl.Store, error) {
 	switch cfg.HITLStore {
-	case "redis":
-		if cfg.Redis == nil {
-			return nil, fmt.Errorf("HITL_STORE=redis but no Redis config (set REDIS_HOST etc)")
+	case "valkey", "redis":
+		if cfg.Valkey == nil {
+			return nil, fmt.Errorf("HITL_STORE=%s but no Valkey config (set REDIS_HOST etc)", cfg.HITLStore)
 		}
-		r, err := pkgredis.New(context.Background(), *cfg.Redis)
+		v, err := pkgvalkey.New(context.Background(), *cfg.Valkey)
 		if err != nil {
-			return nil, fmt.Errorf("hitl redis: %w", err)
+			return nil, fmt.Errorf("hitl valkey: %w", err)
 		}
-		logger.Info().Msg("hitl: using redis store")
-		return hitl.NewRedisStore(r.Client, "", 0), nil
+		logger.Info().Msg("hitl: using valkey store")
+		return hitl.NewValkeyStore(v.Client, "", 0), nil
 	default:
 		logger.Info().Msg("hitl: using in-memory store")
 		return hitl.NewInMemoryStore(), nil
 	}
 }
 
-func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool, interrupts hitl.Store, logger zerolog.Logger) (*Core, error) {
+// NewSessionService creates a session.Service based on cfg.SessionStore.
+// Set SESSION_STORE=valkey to use Valkey/Redis. Defaults to ADK in-memory.
+func NewSessionService(cfg *config.Config, logger zerolog.Logger) (session.Service, error) {
+	switch cfg.SessionStore {
+	case "valkey", "redis":
+		if cfg.Valkey == nil {
+			return nil, fmt.Errorf("SESSION_STORE=%s but no Valkey config (set REDIS_HOST etc)", cfg.SessionStore)
+		}
+		v, err := pkgvalkey.New(context.Background(), *cfg.Valkey)
+		if err != nil {
+			return nil, fmt.Errorf("session valkey: %w", err)
+		}
+		logger.Info().Msg("session: using valkey store")
+		return sessionvalkey.NewSessionService(v.Client, 0), nil
+	default:
+		logger.Info().Msg("session: using in-memory store")
+		return session.InMemoryService(), nil
+	}
+}
+
+func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool, interrupts hitl.Store, sessionService session.Service, logger zerolog.Logger) (*Core, error) {
 	// Resolve provider config for the agent's LLM
 	baseURL, apiKey, httpClient := resolveProvider(cfg, agentCfg)
 
@@ -69,7 +90,6 @@ func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool
 		return nil, err
 	}
 
-	sessionService := session.InMemoryService()
 	sm := NewSessionManager(sessionService, cfg.AppName, logger)
 
 	r, err := runner.New(runner.Config{
@@ -79,11 +99,6 @@ func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	// Pre-create a default session for startup validation
-	if err := sm.GetOrCreate(context.Background(), "default"); err != nil {
-		logger.Warn().Err(err).Msg("failed to pre-create default session")
 	}
 
 	return &Core{
@@ -97,8 +112,7 @@ func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool
 }
 
 // NewCoreWithAgent creates a Core using a pre-built agent hierarchy (e.g. for multi-agent setups).
-func NewCoreWithAgent(cfg *config.Config, agentCfg *config.AgentConfig, rootAgent adkagent.Agent, interrupts hitl.Store, logger zerolog.Logger) (*Core, error) {
-	sessionService := session.InMemoryService()
+func NewCoreWithAgent(cfg *config.Config, agentCfg *config.AgentConfig, rootAgent adkagent.Agent, interrupts hitl.Store, sessionService session.Service, logger zerolog.Logger) (*Core, error) {
 	sm := NewSessionManager(sessionService, cfg.AppName, logger)
 
 	r, err := runner.New(runner.Config{
@@ -108,10 +122,6 @@ func NewCoreWithAgent(cfg *config.Config, agentCfg *config.AgentConfig, rootAgen
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	if err := sm.GetOrCreate(context.Background(), "default"); err != nil {
-		logger.Warn().Err(err).Msg("failed to pre-create default session")
 	}
 
 	return &Core{
@@ -171,4 +181,3 @@ func ProxyProvider(cfg *config.Config, modelID string) (baseURL, apiKey string, 
 	}
 	return "", "", nil
 }
-

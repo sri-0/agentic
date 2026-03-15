@@ -19,6 +19,7 @@ import (
 	"agentic/internal/rag"
 
 	"github.com/rs/zerolog"
+	"google.golang.org/adk/session"
 )
 
 // newFakeUpstreamMulti creates a fake OpenAI-compatible upstream that handles
@@ -195,7 +196,7 @@ func buildDeepResearchHandler(t *testing.T, cfg *config.Config) http.HandlerFunc
 		t.Fatal(err)
 	}
 
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), zerolog.Nop())
+	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), session.InMemoryService(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +231,7 @@ func TestWorkflow_BasicAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), zerolog.Nop())
+	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), session.InMemoryService(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +440,7 @@ func TestWorkflow_TriageAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), zerolog.Nop())
+	core, err := agent.NewCoreWithAgent(cfg, &agentCfg, rootAgent, hitl.NewInMemoryStore(), session.InMemoryService(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +509,7 @@ func TestWorkflow_MultiAgentRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bc, err := agent.NewCoreWithAgent(cfg, &basicCfg, ba, hitl.NewInMemoryStore(), zerolog.Nop())
+	bc, err := agent.NewCoreWithAgent(cfg, &basicCfg, ba, hitl.NewInMemoryStore(), session.InMemoryService(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +520,7 @@ func TestWorkflow_MultiAgentRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tc, err := agent.NewCoreWithAgent(cfg, &triageCfg, ta, hitl.NewInMemoryStore(), zerolog.Nop())
+	tc, err := agent.NewCoreWithAgent(cfg, &triageCfg, ta, hitl.NewInMemoryStore(), session.InMemoryService(), zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}

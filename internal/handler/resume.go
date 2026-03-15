@@ -28,24 +28,18 @@ func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 			req.Action = "denied"
 		}
 
-		// Find the right core for this thread. Try all registered cores.
-		var core *agent.Core
-		for _, id := range registry.IDs() {
-			c := registry.Get(id)
-			if p, _ := c.Interrupts.Get(req.ThreadID); p != nil {
-				core = c
-				break
-			}
-		}
-
-		if core == nil {
+		// Look up the pending interrupt from the shared store (any core can read it).
+		anyCore := registry.Get(registry.IDs()[0])
+		pending, err := anyCore.Interrupts.Get(req.ThreadID)
+		if err != nil || pending == nil {
 			http.Error(w, `{"error": "no pending confirmation for this thread"}`, http.StatusNotFound)
 			return
 		}
 
-		pending, err := core.Interrupts.Get(req.ThreadID)
-		if err != nil || pending == nil {
-			http.Error(w, `{"error": "no pending confirmation for this thread"}`, http.StatusNotFound)
+		// Use the stored agent ID to find the correct core.
+		core := registry.Get(pending.AgentID)
+		if core == nil {
+			http.Error(w, fmt.Sprintf(`{"error": "agent %s not found"}`, pending.AgentID), http.StatusNotFound)
 			return
 		}
 

@@ -102,6 +102,11 @@ func main() {
 		logger.Fatal().Err(err).Msg("failed to create HITL store")
 	}
 
+	sessionService, err := agent.NewSessionService(cfg, logger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to create session service")
+	}
+
 	registry := agent.NewRegistry()
 
 	for i := range agentsCfg.Agents {
@@ -123,7 +128,7 @@ func main() {
 			continue
 		}
 
-		core, coreErr := agent.NewCoreWithAgent(cfg, agentCfg, rootAgent, hitlStore, logger)
+		core, coreErr := agent.NewCoreWithAgent(cfg, agentCfg, rootAgent, hitlStore, sessionService, logger)
 		if coreErr != nil {
 			logger.Error().Err(coreErr).Str("agent", agentCfg.ID).Msg("failed to create agent core, skipping")
 			continue

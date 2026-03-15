@@ -1,90 +1,62 @@
-package redis
+package valkey
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"iter"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	vk "github.com/valkey-io/valkey-go"
 	"google.golang.org/adk/session"
 )
 
-// RedisSessionService implements session.Service using Redis as the backend.
-type RedisSessionService struct {
-	client *redis.Client
+// SessionService implements session.Service using Valkey/Redis as the backend.
+type SessionService struct {
+	client vk.Client
 	ttl    time.Duration
 }
 
-// RedisSessionServiceConfig holds configuration for RedisSessionService.
-type RedisSessionServiceConfig struct {
-	// Addr is the Redis server address (e.g., "localhost:6379")
-	Addr string
-	// Password for Redis authentication (optional)
-	Password string
-	// DB is the Redis database number
-	DB int
-	// TTL is the session expiration time (default: 24 hours)
-	TTL time.Duration
-}
-
-// NewRedisSessionService creates a new Redis-backed session service.
-func NewRedisSessionService(cfg RedisSessionServiceConfig) (*RedisSessionService, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
-	}
-
-	ttl := cfg.TTL
+// NewSessionService creates a new Valkey-backed session service.
+// Accepts an existing valkey.Client. TTL defaults to 24 hours if zero.
+func NewSessionService(client vk.Client, ttl time.Duration) *SessionService {
 	if ttl == 0 {
 		ttl = 24 * time.Hour
 	}
-
-	return &RedisSessionService{
+	return &SessionService{
 		client: client,
 		ttl:    ttl,
-	}, nil
+	}
 }
 
 // Key helpers
-func (s *RedisSessionService) sessionKey(appName, userID, sessionID string) string {
+func (s *SessionService) sessionKey(appName, userID, sessionID string) string {
 	return fmt.Sprintf("session:%s:%s:%s", appName, userID, sessionID)
 }
 
-func (s *RedisSessionService) sessionsIndexKey(appName, userID string) string {
+func (s *SessionService) sessionsIndexKey(appName, userID string) string {
 	return fmt.Sprintf("sessions:%s:%s", appName, userID)
 }
 
-func (s *RedisSessionService) eventsKey(appName, userID, sessionID string) string {
+func (s *SessionService) eventsKey(appName, userID, sessionID string) string {
 	return fmt.Sprintf("events:%s:%s:%s", appName, userID, sessionID)
 }
 
 // Create creates a new session.
-func (s *RedisSessionService) Create(ctx context.Context, req *session.CreateRequest) (*session.CreateResponse, error) {
+func (s *SessionService) Create(ctx context.Context, req *session.CreateRequest) (*session.CreateResponse, error) {
 	sessionID := req.SessionID
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
 	key := s.sessionKey(req.AppName, req.UserID, sessionID)
-	eventsKey := s.eventsKey(req.AppName, req.UserID, sessionID)
 
-	sess := &redisSession{
+	sess := &valkeySession{
 		id:             sessionID,
 		appName:        req.AppName,
 		userID:         req.UserID,
-		state:          newRedisState(req.State, s.client, key, s.ttl),
-		events:         newRedisEvents(nil, s.client, eventsKey),
+		state:          newValkeyState(req.State, s.client, key, s.ttl),
+		events:         newValkeyEvents(nil, s.client, s.eventsKey(req.AppName, req.UserID, sessionID)),
 		lastUpdateTime: time.Now(),
 	}
 
@@ -93,27 +65,27 @@ func (s *RedisSessionService) Create(ctx context.Context, req *session.CreateReq
 		return nil, fmt.Errorf("failed to marshal session: %w", err)
 	}
 
-	if err := s.client.Set(ctx, key, data, s.ttl).Err(); err != nil {
+	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(data)).Ex(s.ttl).Build()).Error(); err != nil {
 		return nil, fmt.Errorf("failed to store session: %w", err)
 	}
 
 	// Add to sessions index
 	indexKey := s.sessionsIndexKey(req.AppName, req.UserID)
-	if err := s.client.SAdd(ctx, indexKey, sessionID).Err(); err != nil {
+	if err := s.client.Do(ctx, s.client.B().Sadd().Key(indexKey).Member(sessionID).Build()).Error(); err != nil {
 		return nil, fmt.Errorf("failed to update sessions index: %w", err)
 	}
-	s.client.Expire(ctx, indexKey, s.ttl)
+	s.client.Do(ctx, s.client.B().Expire().Key(indexKey).Seconds(int64(s.ttl.Seconds())).Build())
 
 	return &session.CreateResponse{Session: sess}, nil
 }
 
 // Get retrieves a session by ID.
-func (s *RedisSessionService) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
+func (s *SessionService) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
 	key := s.sessionKey(req.AppName, req.UserID, req.SessionID)
 
-	data, err := s.client.Get(ctx, key).Bytes()
+	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).AsBytes()
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
+		if vk.IsValkeyNil(err) {
 			return nil, fmt.Errorf("session not found: %s", req.SessionID)
 		}
 		return nil, fmt.Errorf("failed to get session: %w", err)
@@ -126,8 +98,8 @@ func (s *RedisSessionService) Get(ctx context.Context, req *session.GetRequest) 
 
 	// Load events
 	eventsKey := s.eventsKey(req.AppName, req.UserID, req.SessionID)
-	eventData, err := s.client.LRange(ctx, eventsKey, 0, -1).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	eventData, err := s.client.Do(ctx, s.client.B().Lrange().Key(eventsKey).Start(0).Stop(-1).Build()).AsStrSlice()
+	if err != nil && !vk.IsValkeyNil(err) {
 		return nil, fmt.Errorf("failed to get events: %w", err)
 	}
 
@@ -154,12 +126,12 @@ func (s *RedisSessionService) Get(ctx context.Context, req *session.GetRequest) 
 		events = filtered
 	}
 
-	sess := &redisSession{
+	sess := &valkeySession{
 		id:             storable.ID,
 		appName:        storable.AppName,
 		userID:         storable.UserID,
-		state:          newRedisState(storable.State, s.client, key, s.ttl),
-		events:         newRedisEvents(events, s.client, eventsKey),
+		state:          newValkeyState(storable.State, s.client, key, s.ttl),
+		events:         newValkeyEvents(events, s.client, eventsKey),
 		lastUpdateTime: storable.LastUpdateTime,
 	}
 
@@ -167,11 +139,14 @@ func (s *RedisSessionService) Get(ctx context.Context, req *session.GetRequest) 
 }
 
 // List returns all sessions for a user.
-func (s *RedisSessionService) List(ctx context.Context, req *session.ListRequest) (*session.ListResponse, error) {
+func (s *SessionService) List(ctx context.Context, req *session.ListRequest) (*session.ListResponse, error) {
 	indexKey := s.sessionsIndexKey(req.AppName, req.UserID)
 
-	sessionIDs, err := s.client.SMembers(ctx, indexKey).Result()
+	sessionIDs, err := s.client.Do(ctx, s.client.B().Smembers().Key(indexKey).Build()).AsStrSlice()
 	if err != nil {
+		if vk.IsValkeyNil(err) {
+			return &session.ListResponse{}, nil
+		}
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}
 
@@ -183,7 +158,7 @@ func (s *RedisSessionService) List(ctx context.Context, req *session.ListRequest
 			SessionID: sessionID,
 		})
 		if err != nil {
-			continue // Skip sessions that can't be retrieved
+			continue
 		}
 		sessions = append(sessions, resp.Session)
 	}
@@ -192,25 +167,27 @@ func (s *RedisSessionService) List(ctx context.Context, req *session.ListRequest
 }
 
 // Delete removes a session.
-func (s *RedisSessionService) Delete(ctx context.Context, req *session.DeleteRequest) error {
+func (s *SessionService) Delete(ctx context.Context, req *session.DeleteRequest) error {
 	key := s.sessionKey(req.AppName, req.UserID, req.SessionID)
 	eventsKey := s.eventsKey(req.AppName, req.UserID, req.SessionID)
 	indexKey := s.sessionsIndexKey(req.AppName, req.UserID)
 
-	pipe := s.client.Pipeline()
-	pipe.Del(ctx, key)
-	pipe.Del(ctx, eventsKey)
-	pipe.SRem(ctx, indexKey, req.SessionID)
+	cmds := make(vk.Commands, 0, 3)
+	cmds = append(cmds, s.client.B().Del().Key(key).Build())
+	cmds = append(cmds, s.client.B().Del().Key(eventsKey).Build())
+	cmds = append(cmds, s.client.B().Srem().Key(indexKey).Member(req.SessionID).Build())
 
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("failed to delete session: %w", err)
+	for _, resp := range s.client.DoMulti(ctx, cmds...) {
+		if err := resp.Error(); err != nil {
+			return fmt.Errorf("failed to delete session: %w", err)
+		}
 	}
 
 	return nil
 }
 
 // AppendEvent appends an event to a session.
-func (s *RedisSessionService) AppendEvent(ctx context.Context, sess session.Session, evt *session.Event) error {
+func (s *SessionService) AppendEvent(ctx context.Context, sess session.Session, evt *session.Event) error {
 	evt.Timestamp = time.Now()
 	if evt.ID == "" {
 		evt.ID = fmt.Sprintf("%d", time.Now().UnixNano())
@@ -222,14 +199,14 @@ func (s *RedisSessionService) AppendEvent(ctx context.Context, sess session.Sess
 	}
 
 	eventsKey := s.eventsKey(sess.AppName(), sess.UserID(), sess.ID())
-	if err := s.client.RPush(ctx, eventsKey, data).Err(); err != nil {
+	if err := s.client.Do(ctx, s.client.B().Rpush().Key(eventsKey).Element(string(data)).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to append event: %w", err)
 	}
-	s.client.Expire(ctx, eventsKey, s.ttl)
+	s.client.Do(ctx, s.client.B().Expire().Key(eventsKey).Seconds(int64(s.ttl.Seconds())).Build())
 
 	// Update session's last update time and persist current state
 	key := s.sessionKey(sess.AppName(), sess.UserID(), sess.ID())
-	sessData, err := s.client.Get(ctx, key).Bytes()
+	sessData, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).AsBytes()
 	if err != nil {
 		return fmt.Errorf("failed to get session for update: %w", err)
 	}
@@ -254,16 +231,16 @@ func (s *RedisSessionService) AppendEvent(ctx context.Context, sess session.Sess
 		return fmt.Errorf("failed to marshal updated session: %w", err)
 	}
 
-	if err := s.client.Set(ctx, key, updatedData, s.ttl).Err(); err != nil {
+	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(string(updatedData)).Ex(s.ttl).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to update session: %w", err)
 	}
 
 	return nil
 }
 
-// Close closes the Redis connection.
-func (s *RedisSessionService) Close() error {
-	return s.client.Close()
+// Close closes the Valkey connection.
+func (s *SessionService) Close() {
+	s.client.Close()
 }
 
 // storableSession is the JSON-serializable representation of a session.
@@ -275,24 +252,24 @@ type storableSession struct {
 	LastUpdateTime time.Time      `json:"last_update_time"`
 }
 
-// redisSession implements session.Session.
-type redisSession struct {
+// valkeySession implements session.Session.
+type valkeySession struct {
 	id             string
 	appName        string
 	userID         string
-	state          *redisState
-	events         *redisEvents
+	state          *valkeyState
+	events         *valkeyEvents
 	lastUpdateTime time.Time
 }
 
-func (s *redisSession) ID() string                { return s.id }
-func (s *redisSession) AppName() string           { return s.appName }
-func (s *redisSession) UserID() string            { return s.userID }
-func (s *redisSession) State() session.State      { return s.state }
-func (s *redisSession) Events() session.Events    { return s.events }
-func (s *redisSession) LastUpdateTime() time.Time { return s.lastUpdateTime }
+func (s *valkeySession) ID() string                { return s.id }
+func (s *valkeySession) AppName() string           { return s.appName }
+func (s *valkeySession) UserID() string            { return s.userID }
+func (s *valkeySession) State() session.State      { return s.state }
+func (s *valkeySession) Events() session.Events    { return s.events }
+func (s *valkeySession) LastUpdateTime() time.Time { return s.lastUpdateTime }
 
-func (s *redisSession) toStorable() storableSession {
+func (s *valkeySession) toStorable() storableSession {
 	state := make(map[string]any)
 	for k, v := range s.state.All() {
 		state[k] = v
@@ -306,20 +283,20 @@ func (s *redisSession) toStorable() storableSession {
 	}
 }
 
-// redisState implements session.State with Redis persistence.
-type redisState struct {
+// valkeyState implements session.State with Valkey persistence.
+type valkeyState struct {
 	data   map[string]any
-	client *redis.Client
+	client vk.Client
 	key    string
 	ttl    time.Duration
 }
 
-func newRedisState(initial map[string]any, client *redis.Client, key string, ttl time.Duration) *redisState {
+func newValkeyState(initial map[string]any, client vk.Client, key string, ttl time.Duration) *valkeyState {
 	data := make(map[string]any)
 	for k, v := range initial {
 		data[k] = v
 	}
-	return &redisState{
+	return &valkeyState{
 		data:   data,
 		client: client,
 		key:    key,
@@ -327,7 +304,7 @@ func newRedisState(initial map[string]any, client *redis.Client, key string, ttl
 	}
 }
 
-func (s *redisState) Get(key string) (any, error) {
+func (s *valkeyState) Get(key string) (any, error) {
 	v, ok := s.data[key]
 	if !ok {
 		return nil, session.ErrStateKeyNotExist
@@ -335,21 +312,18 @@ func (s *redisState) Get(key string) (any, error) {
 	return v, nil
 }
 
-func (s *redisState) Set(key string, value any) error {
+func (s *valkeyState) Set(key string, value any) error {
 	s.data[key] = value
-
-	// Persist to Redis immediately
 	return s.persist()
 }
 
-func (s *redisState) persist() error {
+func (s *valkeyState) persist() error {
 	ctx := context.Background()
 
-	// Get current session data
-	data, err := s.client.Get(ctx, s.key).Bytes()
+	data, err := s.client.Do(ctx, s.client.B().Get().Key(s.key).Build()).AsBytes()
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil // Session doesn't exist yet, will be created
+		if vk.IsValkeyNil(err) {
+			return nil
 		}
 		return fmt.Errorf("failed to get session for state update: %w", err)
 	}
@@ -359,27 +333,25 @@ func (s *redisState) persist() error {
 		return fmt.Errorf("failed to unmarshal session: %w", err)
 	}
 
-	// Update state
 	storable.State = make(map[string]any)
 	for k, v := range s.data {
 		storable.State[k] = v
 	}
 	storable.LastUpdateTime = time.Now()
 
-	// Save back
 	updatedData, err := json.Marshal(storable)
 	if err != nil {
 		return fmt.Errorf("failed to marshal updated session: %w", err)
 	}
 
-	if err := s.client.Set(ctx, s.key, updatedData, s.ttl).Err(); err != nil {
+	if err := s.client.Do(ctx, s.client.B().Set().Key(s.key).Value(string(updatedData)).Ex(s.ttl).Build()).Error(); err != nil {
 		return fmt.Errorf("failed to persist state: %w", err)
 	}
 
 	return nil
 }
 
-func (s *redisState) All() iter.Seq2[string, any] {
+func (s *valkeyState) All() iter.Seq2[string, any] {
 	return func(yield func(string, any) bool) {
 		for k, v := range s.data {
 			if !yield(k, v) {
@@ -389,32 +361,31 @@ func (s *redisState) All() iter.Seq2[string, any] {
 	}
 }
 
-// redisEvents implements session.Events with live Redis reads.
-type redisEvents struct {
-	client *redis.Client
+// valkeyEvents implements session.Events with live Valkey reads.
+type valkeyEvents struct {
+	client vk.Client
 	key    string
-	// cached events for when we don't have Redis connection info
 	cached []*session.Event
 }
 
-func newRedisEvents(events []*session.Event, client *redis.Client, key string) *redisEvents {
+func newValkeyEvents(events []*session.Event, client vk.Client, key string) *valkeyEvents {
 	if events == nil {
 		events = make([]*session.Event, 0)
 	}
-	return &redisEvents{
+	return &valkeyEvents{
 		client: client,
 		key:    key,
 		cached: events,
 	}
 }
 
-func (e *redisEvents) loadFromRedis() []*session.Event {
-	if e.client == nil || e.key == "" {
+func (e *valkeyEvents) loadFromValkey() []*session.Event {
+	if e.key == "" {
 		return e.cached
 	}
 
 	ctx := context.Background()
-	eventData, err := e.client.LRange(ctx, e.key, 0, -1).Result()
+	eventData, err := e.client.Do(ctx, e.client.B().Lrange().Key(e.key).Start(0).Stop(-1).Build()).AsStrSlice()
 	if err != nil {
 		return e.cached
 	}
@@ -430,8 +401,8 @@ func (e *redisEvents) loadFromRedis() []*session.Event {
 	return events
 }
 
-func (e *redisEvents) All() iter.Seq[*session.Event] {
-	events := e.loadFromRedis()
+func (e *valkeyEvents) All() iter.Seq[*session.Event] {
+	events := e.loadFromValkey()
 	return func(yield func(*session.Event) bool) {
 		for _, evt := range events {
 			if !yield(evt) {
@@ -441,13 +412,13 @@ func (e *redisEvents) All() iter.Seq[*session.Event] {
 	}
 }
 
-func (e *redisEvents) Len() int {
-	events := e.loadFromRedis()
+func (e *valkeyEvents) Len() int {
+	events := e.loadFromValkey()
 	return len(events)
 }
 
-func (e *redisEvents) At(i int) *session.Event {
-	events := e.loadFromRedis()
+func (e *valkeyEvents) At(i int) *session.Event {
+	events := e.loadFromValkey()
 	if i < 0 || i >= len(events) {
 		return nil
 	}
@@ -455,7 +426,7 @@ func (e *redisEvents) At(i int) *session.Event {
 }
 
 // Ensure interfaces are implemented
-var _ session.Service = (*RedisSessionService)(nil)
-var _ session.Session = (*redisSession)(nil)
-var _ session.State = (*redisState)(nil)
-var _ session.Events = (*redisEvents)(nil)
+var _ session.Service = (*SessionService)(nil)
+var _ session.Session = (*valkeySession)(nil)
+var _ session.State = (*valkeyState)(nil)
+var _ session.Events = (*valkeyEvents)(nil)

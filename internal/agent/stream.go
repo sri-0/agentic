@@ -234,6 +234,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 
 				// Store the pending interrupt so the resume endpoint can find it
 				if err := core.Interrupts.Set(threadID, &hitl.PendingInterrupt{
+					AgentID:            core.AgentID,
 					ConfirmationCallID: fc.ID,
 					ToolCallID:         originalCall.ID,
 					ToolName:           originalCall.Name,

@@ -245,6 +245,7 @@ func TestResumeHandler(t *testing.T) {
 
 	// Set pending interrupt
 	_ = core.Interrupts.Set("thread-resume", &hitl.PendingInterrupt{
+		AgentID:            "test-agent",
 		ConfirmationCallID: "confirm_001",
 		ToolCallID:         "call_001",
 		ToolName:           "write_database",
