@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"agentic/internal/config"
+	genaiopenai "agentic/pkg/genai/openai"
 
-	genaiopenai "github.com/achetronic/adk-utils-go/genai/openai"
 	"github.com/rs/zerolog"
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
@@ -72,12 +72,13 @@ type Core struct {
 
 func NewCore(cfg *config.Config, agentCfg *config.AgentConfig, tools []tool.Tool, logger zerolog.Logger) (*Core, error) {
 	// Resolve provider config for the agent's LLM
-	baseURL, apiKey := resolveProvider(cfg, agentCfg)
+	baseURL, apiKey, httpClient := resolveProvider(cfg, agentCfg)
 
 	llmModel := genaiopenai.New(genaiopenai.Config{
-		APIKey:    apiKey,
-		BaseURL:   baseURL,
-		ModelName: agentCfg.Model,
+		APIKey:     apiKey,
+		BaseURL:    baseURL,
+		ModelName:  agentCfg.Model,
+		HTTPClient: httpClient,
 	})
 
 	agentInstance, err := llmagent.New(llmagent.Config{
@@ -145,18 +146,17 @@ func NewCoreWithAgent(cfg *config.Config, agentCfg *config.AgentConfig, rootAgen
 	}, nil
 }
 
-// resolveProvider returns the base URL and API key for the agent's provider.
-func resolveProvider(cfg *config.Config, agentCfg *config.AgentConfig) (baseURL, apiKey string) {
+// resolveProvider returns the base URL, API key, and HTTP client for the agent's provider.
+func resolveProvider(cfg *config.Config, agentCfg *config.AgentConfig) (baseURL, apiKey string, httpClient *http.Client) {
 	if cfg.Models != nil && agentCfg.Provider != "" {
 		if p := cfg.Models.FindProvider(agentCfg.Provider); p != nil {
-			baseURL = p.BaseURL
-			apiKey = p.APIKey()
-			if baseURL != "" && apiKey != "" {
-				return baseURL, apiKey
+			if p.BaseURL != "" {
+				httpClient, _ = p.HTTPClient()
+				return p.BaseURL, p.APIKey(), httpClient
 			}
 		}
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // AgentModelIDs returns the list of model IDs that should be handled as agents
@@ -178,15 +178,15 @@ func IsAgentModel(cfg *config.Config, modelID string) bool {
 	return false
 }
 
-// ProxyProvider returns the base URL, API key, and optional custom HTTP client
-// for proxying non-agent models. It checks models.yaml providers first, then
-// falls back to env config. The returned client is nil when no custom TLS is needed.
+// ProxyProvider returns the base URL, API key, and HTTP client for proxying
+// non-agent models. It checks models.yaml providers first, then falls back to
+// env config. Returns nil client only when no provider is found.
 func ProxyProvider(cfg *config.Config, modelID string) (baseURL, apiKey string, client *http.Client) {
 	if cfg.Models != nil {
 		if p := cfg.Models.FindProviderForModel(modelID); p != nil {
 			key := p.APIKey()
-			if p.BaseURL != "" && key != "" {
-				c, _ := p.HTTPClient() // nil if no custom TLS
+			if p.BaseURL != "" {
+				c, _ := p.HTTPClient()
 				return p.BaseURL, key, c
 			}
 		}
