@@ -73,7 +73,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 
 		// RAG augmentation (no-op if osClient nil)
 		if req.UseRAG {
-			messages = rag.AugmentMessages(r.Context(), osClient, messages, logger)
+			messages = rag.AugmentMessages(r.Context(), cfg, osClient, messages, logger)
 		}
 
 		var saver *chat.MessageSaver

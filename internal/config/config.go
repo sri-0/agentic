@@ -28,6 +28,7 @@ type Config struct {
 	// Loaded from YAML files
 	Models *ModelsConfig
 	Agents *AgentsConfig
+	RAG    *RAGConfig
 }
 
 func Load(ctx context.Context) (*Config, error) {

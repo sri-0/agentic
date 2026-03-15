@@ -11,8 +11,8 @@ const (
 	IndexThreads    = "threads"
 	IndexMessages   = "messages"
 
-	// Default vector dimension (OpenAI text-embedding-3-small).
-	DefaultVectorDimension = 1536
+	// Default vector dimension (intfloat/multilingual-e5-large).
+	DefaultVectorDimension = 1024
 )
 
 // EmbeddingsMapping is the index mapping for the embeddings vector store.
@@ -36,7 +36,7 @@ var EmbeddingsMapping = json.RawMessage(`{
 			"text":           { "type": "text" },
 			"vector": {
 				"type":      "knn_vector",
-				"dimension": 1536,
+				"dimension": 1024,
 				"method": {
 					"name":       "hnsw",
 					"space_type": "cosinesimil",

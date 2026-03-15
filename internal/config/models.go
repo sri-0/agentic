@@ -135,6 +135,7 @@ const (
 	ModelTypeLLM       ModelType = "llm"
 	ModelTypeEmbedding ModelType = "embedding"
 	ModelTypeVision    ModelType = "vision"
+	ModelTypeAgent     ModelType = "agent"
 )
 
 type Model struct {

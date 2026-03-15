@@ -19,6 +19,7 @@ func Models(cfg *config.Config) http.HandlerFunc {
 			entry := map[string]any{
 				"id":       a.ID,
 				"object":   "model",
+				"type":     "agent",
 				"created":  created,
 				"owned_by": "agentic",
 			}

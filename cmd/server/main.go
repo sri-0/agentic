@@ -77,6 +77,14 @@ func main() {
 	cfg.Agents = agentsCfg
 	logger.Info().Strs("agents", agentsCfg.AgentIDs()).Msg("agents config loaded")
 
+	ragCfg, err := config.LoadRAG(filepath.Join(configDir, "rag.yaml"))
+	if err != nil {
+		logger.Warn().Err(err).Msg("rag.yaml not found, using defaults")
+	} else {
+		cfg.RAG = ragCfg
+		logger.Info().Str("embedding_model", ragCfg.EmbeddingModel).Int("top_k", ragCfg.TopK).Msg("rag config loaded")
+	}
+
 	// Initialize OpenSearch client
 	osClient := opensearch.New(opensearch.Config{
 		URL:      cfg.OpenSearchURL,
