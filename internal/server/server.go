@@ -7,6 +7,7 @@ import (
 	"agentic/internal/agent"
 	"agentic/internal/config"
 	"agentic/internal/handler"
+	oa "agentic/pkg/openapi"
 	"agentic/pkg/db/opensearch"
 
 	"github.com/gorilla/mux"
@@ -21,6 +22,13 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 	r.Use(loggingMiddleware(logger))
 
 	r.HandleFunc("/health", handler.Health(registry)).Methods("GET")
+	specCfg := oa.SpecConfig{
+		Title:       cfg.AppName,
+		Description: "OpenAI-compatible API with agent orchestration, RAG, threads, and prompt management.",
+		Version:     "1.0.0",
+	}
+	r.HandleFunc("/v1/openapi.json", handler.OpenAPISpec(r, specCfg)).Methods("GET")
+	r.HandleFunc("/docs", handler.APIDocs(cfg.AppName)).Methods("GET")
 	r.HandleFunc("/v1/models", handler.Models(cfg)).Methods("GET")
 	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(cfg, logger)).Methods("POST", "OPTIONS")

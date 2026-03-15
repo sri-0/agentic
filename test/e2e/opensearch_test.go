@@ -377,7 +377,7 @@ func TestPromptsCRUD(t *testing.T) {
 		t.Fatalf("create: status %d, body: %s", w.Code, w.Body.String())
 	}
 
-	var created handler.Prompt
+	var created types.Prompt
 	json.NewDecoder(w.Body).Decode(&created)
 	promptID := created.ID
 	t.Logf("created prompt: %s", promptID)
@@ -398,7 +398,7 @@ func TestPromptsCRUD(t *testing.T) {
 		t.Fatalf("get: status %d", w.Code)
 	}
 
-	var fetched handler.Prompt
+	var fetched types.Prompt
 	json.NewDecoder(w.Body).Decode(&fetched)
 	if fetched.Template != "You are a {{role}}. Help with {{task}}." {
 		t.Errorf("template mismatch: %q", fetched.Template)
@@ -423,7 +423,7 @@ func TestPromptsCRUD(t *testing.T) {
 	// Verify update
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, httptest.NewRequest("GET", "/v1/prompts/"+promptID, nil))
-	var updated handler.Prompt
+	var updated types.Prompt
 	json.NewDecoder(w.Body).Decode(&updated)
 	if updated.Version != 2 {
 		t.Errorf("version: expected 2, got %d", updated.Version)
