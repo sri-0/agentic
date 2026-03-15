@@ -17,6 +17,7 @@ import (
 	"agentic/internal/config"
 	"agentic/internal/hitl"
 	"agentic/internal/rag"
+	"agentic/internal/tools"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/adk/session"
@@ -190,8 +191,8 @@ func buildDeepResearchHandler(t *testing.T, cfg *config.Config) http.HandlerFunc
 	agentCfg := deepResearchAgentCfg()
 	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
 
-	ragClient := rag.NewClient(nil)
-	rootAgent, err := deepresearch.NewAgent(cfg, &agentCfg, ragClient)
+	deps := tools.Deps{RAGClient: rag.NewClient(nil, nil)}
+	rootAgent, err := deepresearch.NewAgent(cfg, &agentCfg, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,8 +226,8 @@ func TestWorkflow_BasicAgent(t *testing.T) {
 	}
 	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
 
-	ragClient := rag.NewClient(nil)
-	rootAgent, err := basic.NewAgent(cfg, &agentCfg, ragClient)
+	deps := tools.Deps{RAGClient: rag.NewClient(nil, nil)}
+	rootAgent, err := basic.NewAgent(cfg, &agentCfg, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,8 +438,8 @@ func TestWorkflow_TriageAgent(t *testing.T) {
 	}
 	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
 
-	ragClient := rag.NewClient(nil)
-	rootAgent, err := triage.NewAgent(cfg, &agentCfg, ragClient)
+	deps := tools.Deps{RAGClient: rag.NewClient(nil, nil)}
+	rootAgent, err := triage.NewAgent(cfg, &agentCfg, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,11 +505,11 @@ func TestWorkflow_MultiAgentRegistry(t *testing.T) {
 	}
 	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{basicCfg, triageCfg}}
 
-	ragClient := rag.NewClient(nil)
+	deps := tools.Deps{RAGClient: rag.NewClient(nil, nil)}
 	reg := agent.NewRegistry()
 
 	// Register basic agent
-	ba, err := basic.NewAgent(cfg, &basicCfg, ragClient)
+	ba, err := basic.NewAgent(cfg, &basicCfg, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +520,7 @@ func TestWorkflow_MultiAgentRegistry(t *testing.T) {
 	reg.Register("basic-agent", bc)
 
 	// Register triage agent
-	ta, err := triage.NewAgent(cfg, &triageCfg, ragClient)
+	ta, err := triage.NewAgent(cfg, &triageCfg, deps)
 	if err != nil {
 		t.Fatal(err)
 	}

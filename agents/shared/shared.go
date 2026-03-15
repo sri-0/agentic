@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"agentic/internal/config"
-	"agentic/internal/rag"
 	"agentic/internal/tools"
 	genaiopenai "agentic/pkg/genai/openai"
 
@@ -27,10 +26,10 @@ func ResolveProvider(cfg *config.Config, agentCfg *config.AgentConfig) (string, 
 	return "", "", nil
 }
 
-func ResolveTools(names []string, ragClient *rag.Client) ([]tool.Tool, error) {
+func ResolveTools(names []string, deps tools.Deps) ([]tool.Tool, error) {
 	var resolved []tool.Tool
 	for _, name := range names {
-		t, err := tools.NewToolByName(name, ragClient)
+		t, err := tools.NewToolByName(name, deps)
 		if err != nil {
 			return nil, fmt.Errorf("tool %s: %w", name, err)
 		}
@@ -39,7 +38,7 @@ func ResolveTools(names []string, ragClient *rag.Client) ([]tool.Tool, error) {
 	return resolved, nil
 }
 
-func BuildLLMAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *rag.Client) (agent.Agent, error) {
+func BuildLLMAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps) (agent.Agent, error) {
 	baseURL, apiKey, httpClient := ResolveProvider(cfg, agentCfg)
 	if baseURL == "" {
 		return nil, fmt.Errorf("no provider for model %s", agentCfg.Model)
@@ -52,7 +51,7 @@ func BuildLLMAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *
 		HTTPClient: httpClient,
 	})
 
-	agentTools, err := ResolveTools(agentCfg.Tools, ragClient)
+	agentTools, err := ResolveTools(agentCfg.Tools, deps)
 	if err != nil {
 		return nil, err
 	}
@@ -73,12 +72,12 @@ func BuildLLMAgent(cfg *config.Config, agentCfg *config.AgentConfig, ragClient *
 	return llmagent.New(llmCfg)
 }
 
-func RequireSubAgent(cfg *config.Config, agentCfg *config.AgentConfig, name string, ragClient *rag.Client) (agent.Agent, error) {
+func RequireSubAgent(cfg *config.Config, agentCfg *config.AgentConfig, name string, deps tools.Deps) (agent.Agent, error) {
 	sub := agentCfg.FindSubAgent(name)
 	if sub == nil {
 		return nil, fmt.Errorf("required sub_agent %q not found in config", name)
 	}
-	a, err := BuildLLMAgent(cfg, sub, ragClient)
+	a, err := BuildLLMAgent(cfg, sub, deps)
 	if err != nil {
 		return nil, fmt.Errorf("sub_agent %s: %w", name, err)
 	}

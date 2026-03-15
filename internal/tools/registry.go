@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"agentic/internal/rag"
+	"agentic/pkg/db/opensearch"
 
 	"google.golang.org/adk/tool"
 )
@@ -24,21 +25,27 @@ func HITLToolNames() []string {
 	return []string{"write_database"}
 }
 
-// NewToolByName creates a tool by name. The ragClient is used for tools that need RAG access.
-func NewToolByName(name string, ragClient *rag.Client) (tool.Tool, error) {
+// Deps holds shared dependencies for tool construction.
+type Deps struct {
+	RAGClient *rag.Client
+	OSClient  *opensearch.Client
+}
+
+// NewToolByName creates a tool by name.
+func NewToolByName(name string, deps Deps) (tool.Tool, error) {
 	switch name {
 	case "query_database":
-		return NewQueryDatabaseTool()
+		return NewQueryDatabaseTool(deps.OSClient)
 	case "write_database":
 		return NewWriteDatabaseTool()
 	case "retrieve_documents":
-		return NewRetrieveDocumentsTool()
+		return NewRetrieveDocumentsTool(deps.RAGClient)
 	case "web_search":
 		return NewWebSearchTool()
 	case "calculate":
 		return NewCalculateTool()
 	case "opensearch_retrieve":
-		return NewOpenSearchRetrieveTool(ragClient)
+		return NewOpenSearchRetrieveTool(deps.RAGClient)
 	case "query_research_db":
 		return NewQueryResearchDBTool()
 	case "query_metrics_db":

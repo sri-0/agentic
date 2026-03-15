@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"agentic/internal/config"
 	"agentic/pkg/db/opensearch"
 )
 
@@ -64,10 +65,77 @@ type Section struct {
 
 // Client is the OpenSearch RAG client.
 type Client struct {
-	os *opensearch.Client
+	os  *opensearch.Client
+	cfg *config.Config
 }
 
-func NewClient(os *opensearch.Client) *Client { return &Client{os: os} }
+func NewClient(os *opensearch.Client, cfg *config.Config) *Client {
+	return &Client{os: os, cfg: cfg}
+}
+
+// VectorSearch embeds the query and performs KNN vector search, falling back
+// to text match if embedding fails. This is the primary retrieval method.
+func (c *Client) VectorSearch(query string, topK int, filters map[string]string) ([]Document, error) {
+	if c.os == nil {
+		return nil, fmt.Errorf("opensearch client not configured")
+	}
+	if topK <= 0 {
+		topK = 5
+	}
+	if topK > 20 {
+		topK = 20
+	}
+
+	ctx := context.Background()
+	index := opensearch.IndexEmbeddings
+	if c.cfg != nil && c.cfg.RAG != nil && c.cfg.RAG.Index != "" {
+		index = c.cfg.RAG.Index
+	}
+
+	// Try vector search first
+	if c.cfg != nil {
+		vector, err := EmbedQuery(ctx, c.cfg, query)
+		if err == nil {
+			resp, err := c.os.KNNSearch(ctx, index, "vector", vector, topK, filters)
+			if err == nil {
+				return hitsToDocuments(resp.Hits.Hits), nil
+			}
+		}
+	}
+
+	// Fallback to text search
+	return c.textSearch(ctx, query, topK, filters, index)
+}
+
+func (c *Client) textSearch(ctx context.Context, query string, topK int, filters map[string]string, index string) ([]Document, error) {
+	osQuery := map[string]any{
+		"size": topK,
+		"query": map[string]any{
+			"match": map[string]any{"text": query},
+		},
+	}
+
+	if len(filters) > 0 {
+		var filterClauses []map[string]any
+		for k, v := range filters {
+			filterClauses = append(filterClauses, map[string]any{
+				"term": map[string]any{k: v},
+			})
+		}
+		osQuery["query"] = map[string]any{
+			"bool": map[string]any{
+				"must":   []any{map[string]any{"match": map[string]any{"text": query}}},
+				"filter": filterClauses,
+			},
+		}
+	}
+
+	resp, err := c.os.Search(ctx, index, osQuery)
+	if err != nil {
+		return nil, fmt.Errorf("opensearch text search: %w", err)
+	}
+	return hitsToDocuments(resp.Hits.Hits), nil
+}
 
 // Search performs a text search against the embeddings index.
 func (c *Client) Search(query string, topK int, filters map[string]string) ([]Document, error) {
