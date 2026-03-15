@@ -294,3 +294,12 @@ func (c *ModelsConfig) FindModel(modelID string) *Model {
 	}
 	return nil
 }
+
+// ResolveModelID returns the canonical (config) model ID for a given request ID.
+// e.g. "gpt-4.1-nano" → "openai/gpt-4.1-nano". Returns the input unchanged if not found.
+func (c *ModelsConfig) ResolveModelID(modelID string) string {
+	if m := c.FindModel(modelID); m != nil {
+		return m.ID
+	}
+	return modelID
+}
