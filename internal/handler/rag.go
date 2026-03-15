@@ -5,36 +5,16 @@ import (
 	"net/http"
 	"strconv"
 
+	"agentic/internal/rag"
 	"agentic/pkg/db/opensearch"
 
 	"github.com/rs/zerolog"
 )
 
-// ── RAG search ──────────────────────────────────────────────────────────────
-
-type ragSearchRequest struct {
-	Query   string            `json:"query"`
-	TopK    int               `json:"top_k"`
-	Filters map[string]string `json:"filters,omitempty"`
-	Vector  []float64         `json:"vector,omitempty"`
-}
-
-type ragSearchResponse struct {
-	Query   string            `json:"query"`
-	Total   int               `json:"total"`
-	Results []ragSearchResult `json:"results"`
-}
-
-type ragSearchResult struct {
-	ID    string          `json:"id"`
-	Score float64         `json:"score"`
-	Doc   json.RawMessage `json:"document"`
-}
-
 // RAGSearch handles POST /v1/rag/search — semantic vector search against the embeddings index.
 func RAGSearch(os *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req ragSearchRequest
+		var req rag.SearchRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 			return
@@ -84,9 +64,9 @@ func RAGSearch(os *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 			return
 		}
 
-		results := make([]ragSearchResult, 0, len(resp.Hits.Hits))
+		results := make([]rag.SearchResult, 0, len(resp.Hits.Hits))
 		for _, hit := range resp.Hits.Hits {
-			results = append(results, ragSearchResult{
+			results = append(results, rag.SearchResult{
 				ID:    hit.ID,
 				Score: hit.Score,
 				Doc:   hit.Source,
@@ -94,7 +74,7 @@ func RAGSearch(os *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ragSearchResponse{
+		json.NewEncoder(w).Encode(rag.SearchResponse{
 			Query:   req.Query,
 			Total:   resp.Hits.Total.Value,
 			Results: results,

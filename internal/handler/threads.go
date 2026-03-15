@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"agentic/internal/types"
 	"agentic/pkg/db/opensearch"
 
 	"github.com/google/uuid"
@@ -17,31 +18,6 @@ import (
 // Currently uses X-User-ID header; will be replaced with JWT extraction.
 func getUserID(r *http.Request) string {
 	return r.Header.Get("X-User-ID")
-}
-
-type Thread struct {
-	ID        string  `json:"id"`
-	UserID    string  `json:"user_id"`
-	Title     *string `json:"title"`
-	Model     *string `json:"model"`
-	Pinned    bool    `json:"pinned"`
-	PinnedAt  *string `json:"pinned_at"`
-	Public    bool    `json:"public"`
-	ProjectID *string `json:"project_id"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-}
-
-type ThreadMessage struct {
-	ID             string `json:"id"`
-	ThreadID       string `json:"thread_id"`
-	UserID         string `json:"user_id,omitempty"`
-	Role           string `json:"role"`
-	Content        string `json:"content"`
-	Parts          any    `json:"parts,omitempty"`
-	Model          string `json:"model,omitempty"`
-	MessageGroupID string `json:"message_group_id,omitempty"`
-	CreatedAt      string `json:"created_at"`
 }
 
 // ThreadsList returns all threads for the authenticated user, ordered by pinned then updated_at.
@@ -73,7 +49,7 @@ func ThreadsList(osClient *opensearch.Client, logger zerolog.Logger) http.Handle
 			return
 		}
 
-		threads := make([]Thread, 0, len(resp.Hits.Hits))
+		threads := make([]types.Thread, 0, len(resp.Hits.Hits))
 		for _, hit := range resp.Hits.Hits {
 			t := threadFromHit(hit)
 			threads = append(threads, t)
@@ -131,7 +107,7 @@ func ThreadsCreate(osClient *opensearch.Client, logger zerolog.Logger) http.Hand
 		// Force refresh so the new thread is immediately searchable
 		osClient.Refresh(r.Context(), opensearch.IndexThreads)
 
-		thread := Thread{
+		thread := types.Thread{
 			ID:        id,
 			UserID:    userID,
 			Title:     strPtr(req.Title),
@@ -266,7 +242,7 @@ func ThreadsMessagesList(osClient *opensearch.Client, logger zerolog.Logger) htt
 			return
 		}
 
-		messages := make([]ThreadMessage, 0, len(resp.Hits.Hits))
+		messages := make([]types.ThreadMessage, 0, len(resp.Hits.Hits))
 		for _, hit := range resp.Hits.Hits {
 			m := messageFromHit(hit)
 			messages = append(messages, m)
@@ -320,7 +296,7 @@ func ThreadsMessagesCreate(osClient *opensearch.Client, logger zerolog.Logger) h
 			"updated_at": now,
 		})
 
-		msg := ThreadMessage{
+		msg := types.ThreadMessage{
 			ID:             id,
 			ThreadID:       threadID,
 			UserID:         req.UserID,
@@ -358,7 +334,7 @@ func ThreadsMessagesBulkCreate(osClient *opensearch.Client, logger zerolog.Logge
 		}
 
 		now := time.Now().UTC().Format(time.RFC3339)
-		created := make([]ThreadMessage, 0, len(req.Messages))
+		created := make([]types.ThreadMessage, 0, len(req.Messages))
 
 		for _, m := range req.Messages {
 			id := uuid.New().String()
@@ -379,7 +355,7 @@ func ThreadsMessagesBulkCreate(osClient *opensearch.Client, logger zerolog.Logge
 				return
 			}
 
-			created = append(created, ThreadMessage{
+			created = append(created, types.ThreadMessage{
 				ID:             id,
 				ThreadID:       threadID,
 				UserID:         m.UserID,
@@ -443,11 +419,11 @@ func ThreadsMessagesDelete(osClient *opensearch.Client, logger zerolog.Logger) h
 	}
 }
 
-func threadFromHit(hit opensearch.Hit) Thread {
+func threadFromHit(hit opensearch.Hit) types.Thread {
 	var raw map[string]any
 	json.Unmarshal(hit.Source, &raw)
 
-	t := Thread{
+	t := types.Thread{
 		ID:        hit.ID,
 		UserID:    getStr(raw, "user_id"),
 		Pinned:    getBool(raw, "pinned"),
@@ -470,11 +446,11 @@ func threadFromHit(hit opensearch.Hit) Thread {
 	return t
 }
 
-func messageFromHit(hit opensearch.Hit) ThreadMessage {
+func messageFromHit(hit opensearch.Hit) types.ThreadMessage {
 	var raw map[string]any
 	json.Unmarshal(hit.Source, &raw)
 
-	m := ThreadMessage{
+	m := types.ThreadMessage{
 		ID:             hit.ID,
 		ThreadID:       getStr(raw, "thread_id"),
 		UserID:         getStr(raw, "user_id"),
