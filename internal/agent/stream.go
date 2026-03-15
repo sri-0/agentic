@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"agentic/internal/chat"
 	"agentic/internal/sse"
@@ -29,18 +30,19 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
 	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
 
-	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Int("messages", len(messages)).Msg("stream start")
+	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Int("messages", len(messages)).Msg("stream: request received")
 
 	writeProgress(w, "planning", "Analyzing...")
 
 	// Ensure session exists
 	if err := core.SessionManager.GetOrCreate(ctx, threadID); err != nil {
-		logger.Error().Err(err).Str("thread_id", threadID).Msg("session create failed")
+		logger.Error().Err(err).Str("thread_id", threadID).Msg("stream: session create failed")
 		writeProgress(w, "error", "Failed to create session")
 		sse.WriteSSE(w, cb.Finish("stop"))
 		sse.WriteDone(w)
 		return
 	}
+	logger.Info().Str("thread_id", threadID).Msg("stream: session ready")
 
 	// Build the user message from the last message (ADK session stores history)
 	lastMsg := messages[len(messages)-1]
@@ -64,6 +66,18 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 
 	requestID := fmt.Sprintf("chatcmpl-resume-%s", uuid.New().String()[:12])
 	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
+
+	action := "denied"
+	if approved {
+		action = "approved"
+	}
+	logger.Info().
+		Str("thread_id", threadID).
+		Str("agent_id", core.AgentID).
+		Str("tool", pending.ToolName).
+		Str("tool_call_id", pending.ToolCallID).
+		Str("action", action).
+		Msg("resume: continuing after HITL")
 
 	// Emit synthetic tool call delta so the frontend sees the tool_call
 	// before the tool_result (required by Vercel AI SDK data stream protocol).
@@ -117,7 +131,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 	closeGroup := func() {
 		for a := range activeGroup {
 			writeAgentProgress(w, "agent_done", fmt.Sprintf("%s completed", a), a, step)
-			streamLog.Debug().Str("sub_agent", a).Int("step", step).Msg("agent done")
+			streamLog.Info().Str("sub_agent", a).Int("step", step).Msg("stream: agent done")
 			// Remove from allSeen so the same agents can re-form a group
 			// in the next loop iteration (e.g. document_analyst on doc 2).
 			// The triggering agent (the one that caused the close) stays in
@@ -158,16 +172,19 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		activeGroup[author] = true
 		step++
 		writeAgentProgress(w, "agent_start", fmt.Sprintf("Running %s...", author), author, step)
-		streamLog.Info().Str("sub_agent", author).Int("step", step).Msg("agent start")
+		streamLog.Info().Str("sub_agent", author).Int("step", step).Msg("stream: agent start")
 	}
 
-	streamLog.Info().Msg("starting agent run")
+	startTime := time.Now()
+	eventCount := 0
+	toolCallCount := 0
+	streamLog.Info().Msg("stream: runner started")
 
 	for event, err := range core.Runner.Run(ctx, "default", threadID, content, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeSSE,
 	}) {
 		if err != nil {
-			streamLog.Error().Err(err).Msg("runner error")
+			streamLog.Error().Err(err).Dur("elapsed", time.Since(startTime)).Msg("stream: runner error")
 			writeProgress(w, "error", fmt.Sprintf("Error: %v", err))
 			break
 		}
@@ -176,6 +193,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			continue
 		}
 
+		eventCount++
 		author := event.Author
 		transitionAgent(author)
 
@@ -232,6 +250,13 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 					hint = args
 				}
 
+				streamLog.Info().
+					Str("tool", originalCall.Name).
+					Str("tool_call_id", originalCall.ID).
+					Str("hint", hint).
+					Dur("elapsed", time.Since(startTime)).
+					Msg("stream: HITL interrupt — awaiting confirmation")
+
 				// Store the pending interrupt so the resume endpoint can find it
 				if err := core.Interrupts.Set(threadID, &hitl.PendingInterrupt{
 					AgentID:            core.AgentID,
@@ -261,7 +286,8 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 
 			// Regular tool call (non-confirmation) — emit delta for UI
 			if fc := part.FunctionCall; fc != nil {
-				streamLog.Info().Str("sub_agent", author).Str("tool", fc.Name).Str("call_id", fc.ID).Msg("tool call")
+				toolCallCount++
+				streamLog.Info().Str("sub_agent", author).Str("tool", fc.Name).Str("call_id", fc.ID).Int("tool_call_num", toolCallCount).Dur("elapsed", time.Since(startTime)).Msg("stream: tool call")
 				writeProgress(w, "executing", fmt.Sprintf("Running %s...", fc.Name))
 				argsJSON, _ := json.Marshal(fc.Args)
 				sse.WriteSSE(w, cb.ToolCallDelta(toolCallIdx, fc.ID, fc.Name, string(argsJSON)))
@@ -275,7 +301,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 				if fr.Name == toolconfirmation.FunctionCallName {
 					continue
 				}
-				streamLog.Debug().Str("sub_agent", author).Str("tool", fr.Name).Str("call_id", fr.ID).Msg("tool result")
+				streamLog.Info().Str("sub_agent", author).Str("tool", fr.Name).Str("call_id", fr.ID).Dur("elapsed", time.Since(startTime)).Msg("stream: tool result")
 				evt := types.ToolResultEvent{}
 				evt.ToolResult.ToolCallID = fr.ID
 				evt.ToolResult.ToolName = fr.Name
@@ -296,7 +322,13 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		saver.SaveAssistantMessage(ctx, threadID, outputText, core.AgentID)
 	}
 
-	streamLog.Info().Int("steps", step).Msg("agent run complete")
+	streamLog.Info().
+		Int("steps", step).
+		Int("events", eventCount).
+		Int("tool_calls", toolCallCount).
+		Int("output_chars", len(outputText)).
+		Dur("elapsed", time.Since(startTime)).
+		Msg("stream: agent run complete")
 
 	// Stream closes when the runner completes (all workflow agents finished)
 	sse.WriteSSE(w, cb.Finish("stop"))

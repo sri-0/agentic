@@ -46,9 +46,11 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			// Not an agent — try to proxy to upstream provider
 			baseURL, apiKey, client := agent.ProxyProvider(cfg, req.Model)
 			if baseURL == "" {
+				logger.Warn().Str("model", req.Model).Msg("chat: model not found")
 				http.Error(w, fmt.Sprintf(`{"error": "model %q not found"}`, req.Model), http.StatusNotFound)
 				return
 			}
+			logger.Info().Str("model", req.Model).Str("upstream", baseURL).Msg("chat: proxying to upstream")
 			proxy.ForwardTo(w, baseURL, apiKey, "/chat/completions", rawBody, client)
 			return
 		}
@@ -79,16 +81,18 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			saver = chat.NewMessageSaver(osClient, logger)
 		}
 
+		isStream := req.Stream == nil || *req.Stream
 		logger.Info().
 			Str("thread_id", threadID).
-			Str("agent", core.AgentID).
+			Str("agent_id", core.AgentID).
 			Int("messages", len(messages)).
 			Bool("use_rag", req.UseRAG).
-			Bool("stream", req.Stream == nil || *req.Stream).
+			Bool("stream", isStream).
+			Bool("persist", persistThread).
 			Str("prompt_id", req.PromptID).
-			Msg("agent chat")
+			Msg("chat: routing to agent")
 
-		if req.Stream != nil && !*req.Stream {
+		if !isStream {
 			agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
 		} else {
 			agent.StreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)

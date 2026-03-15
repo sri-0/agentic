@@ -47,10 +47,12 @@ func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 
 		logger.Info().
 			Str("thread_id", req.ThreadID).
+			Str("agent_id", pending.AgentID).
 			Str("action", req.Action).
 			Str("tool", pending.ToolName).
+			Str("tool_call_id", pending.ToolCallID).
 			Bool("approved", approved).
-			Msg("resuming agent")
+			Msg("resume: dispatching HITL response")
 
 		// Clear the pending interrupt
 		_ = core.Interrupts.Clear(req.ThreadID)
