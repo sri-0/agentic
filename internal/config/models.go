@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -257,11 +258,24 @@ func (c *ModelsConfig) FindProvider(id string) *Provider {
 	return nil
 }
 
+// modelIDMatches checks if a configured model ID matches the requested ID.
+// Supports both exact match ("openai/gpt-4.1-nano") and suffix match ("gpt-4.1-nano").
+func modelIDMatches(configID, requestID string) bool {
+	if configID == requestID {
+		return true
+	}
+	// Allow "gpt-4.1-nano" to match "openai/gpt-4.1-nano"
+	if idx := strings.IndexByte(configID, '/'); idx >= 0 {
+		return configID[idx+1:] == requestID
+	}
+	return false
+}
+
 // FindProviderForModel returns the provider that hosts the given model ID.
 func (c *ModelsConfig) FindProviderForModel(modelID string) *Provider {
 	for i := range c.Providers {
 		for _, m := range c.Providers[i].Models {
-			if m.ID == modelID {
+			if modelIDMatches(m.ID, modelID) {
 				return &c.Providers[i]
 			}
 		}
@@ -273,7 +287,7 @@ func (c *ModelsConfig) FindProviderForModel(modelID string) *Provider {
 func (c *ModelsConfig) FindModel(modelID string) *Model {
 	for i := range c.Providers {
 		for j := range c.Providers[i].Models {
-			if c.Providers[i].Models[j].ID == modelID {
+			if modelIDMatches(c.Providers[i].Models[j].ID, modelID) {
 				return &c.Providers[i].Models[j]
 			}
 		}
