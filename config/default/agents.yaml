@@ -3,7 +3,7 @@ agents:
     type: basic
     name: basic_agent
     description: AI assistant with database, search, and calculation tools
-    model: openai/gpt-4o-mini
+    model: gpt-oss-120b
     provider: openrouter
     system_prompt: |
       You are a helpful AI assistant with access to various tools. Use tools when needed to answer questions accurately. Think step by step and use the most appropriate tool for each task.
@@ -32,7 +32,7 @@ agents:
     sub_agents:
       - name: research_planner
         description: Decomposes the research query into a structured plan with search strategies and focus areas
-        model: openai/gpt-4o
+        model: gpt-oss-120b
         provider: openrouter
         output_key: research_plan
         system_prompt: |
@@ -48,7 +48,7 @@ agents:
 
       - name: document_analyst
         description: Analyzes a single document and extracts key findings with citations
-        model: openai/gpt-4o
+        model: gpt-oss-120b
         provider: openrouter
         output_key: analysis_findings
         system_prompt: |
@@ -65,7 +65,7 @@ agents:
 
       - name: data_analyst
         description: Queries databases for supporting quantitative data related to the document
-        model: openai/gpt-4o
+        model: gpt-oss-120b
         provider: openrouter
         output_key: database_results
         system_prompt: |
@@ -84,7 +84,7 @@ agents:
 
       - name: findings_summarizer
         description: Summarizes the key findings for a single document
-        model: openai/gpt-4o-mini
+        model: gpt-oss-120b
         provider: openrouter
         output_key: current_findings
         system_prompt: |
@@ -100,7 +100,7 @@ agents:
 
       - name: gap_analyst
         description: Identifies gaps between research plan and accumulated findings
-        model: openai/gpt-4o
+        model: gpt-oss-120b
         provider: openrouter
         output_key: research_gaps
         system_prompt: |
@@ -123,7 +123,7 @@ agents:
 
       - name: report_generator
         description: Produces the research report, incorporating feedback on revisions
-        model: openai/gpt-4o
+        model: gpt-oss-120b
         provider: openrouter
         output_key: draft_report
         system_prompt: |
@@ -154,7 +154,7 @@ agents:
 
       - name: report_critic
         description: Reviews the draft report for quality, completeness, and accuracy
-        model: openai/gpt-4o
+        model: gpt-oss-120b
         provider: openrouter
         output_key: critic_feedback
         system_prompt: |
@@ -184,7 +184,7 @@ agents:
     sub_agents:
       - name: issue_extractor
         description: Extracts structured issue details from the incident report
-        model: openai/gpt-4o-mini
+        model: gpt-oss-120b
         provider: openrouter
         output_key: extracted_issue
         system_prompt: |
@@ -199,7 +199,7 @@ agents:
 
       - name: keyword_analyst
         description: Analyzes incidents for keyword matches and topic relevance
-        model: openai/gpt-4o-mini
+        model: gpt-oss-120b
         provider: openrouter
         output_key: keyword_analysis
         system_prompt: |
@@ -212,7 +212,7 @@ agents:
 
       - name: incident_researcher
         description: Searches for similar past incidents and context
-        model: openai/gpt-4o-mini
+        model: gpt-oss-120b
         provider: openrouter
         output_key: incident_research
         system_prompt: |
@@ -226,7 +226,7 @@ agents:
 
       - name: severity_classifier
         description: Classifies incident severity based on impact analysis
-        model: openai/gpt-4o-mini
+        model: gpt-oss-120b
         provider: openrouter
         output_key: severity_classification
         system_prompt: |
@@ -245,7 +245,7 @@ agents:
 
       - name: report_agent
         description: Produces triage summary and triggers alerts if needed
-        model: openai/gpt-4o
+        model: gpt-oss-120b
         provider: openrouter
         output_key: triage_report
         system_prompt: |
