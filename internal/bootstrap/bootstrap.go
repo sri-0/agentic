@@ -12,6 +12,7 @@ import (
 
 	"agentic/agents/basic"
 	"agentic/agents/deepresearch"
+	"agentic/agents/swarm"
 	"agentic/agents/triage"
 	"agentic/internal/agent"
 	"agentic/internal/config"
@@ -36,6 +37,7 @@ var builders = map[string]agentBuilder{
 	"basic":         basic.NewAgent,
 	"deep-research": deepresearch.NewAgent,
 	"triage":        triage.NewAgent,
+	"swarm":         swarm.NewAgent,
 }
 
 // Result holds everything produced by Init.

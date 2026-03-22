@@ -270,3 +270,64 @@ agents:
           Produce a clear triage summary with your recommendation.
         tools:
           - trigger_alert
+
+  - id: research-swarm
+    type: swarm
+    name: research_swarm
+    description: Multi-agent research swarm that dynamically decomposes tasks and assigns workers
+    model: gpt-oss-120b
+    provider: openrouter
+    max_iterations: 4
+    max_parallel_workers: 3
+    system_prompt: |
+      You are a research coordinator managing a swarm of specialist workers.
+      Your job is to break down the user's request into concrete tasks, assign them
+      to the most appropriate workers, review their results, and produce a final synthesis.
+
+      Strategy:
+      1. Analyze the user's question and identify what information is needed
+      2. Create tasks for your workers — be specific about what each worker should do
+      3. After workers complete, review results for gaps or follow-up questions
+      4. Either create follow-up tasks or synthesize a final comprehensive answer
+
+      Always assign task IDs like "t1", "t2", etc.
+      When creating the task board, output ONLY the JSON array, no markdown fencing.
+    output_agent: coordinator
+    sub_agents:
+      - name: web_researcher
+        description: Searches the web and knowledge base for information
+        model: gpt-oss-120b
+        provider: openrouter
+        system_prompt: |
+          You are a web researcher. Your task is described below. Search thoroughly
+          and provide detailed, factual findings with sources where possible.
+
+          Your assigned task: {swarm:current_task}
+        tools:
+          - web_search
+          - retrieve_documents
+
+      - name: data_analyst
+        description: Queries databases and analyzes structured data and metrics
+        model: gpt-oss-120b
+        provider: openrouter
+        system_prompt: |
+          You are a data analyst. Your task is described below. Query relevant databases
+          and provide quantitative analysis with specific numbers and trends.
+
+          Your assigned task: {swarm:current_task}
+        tools:
+          - query_database
+          - opensearch_retrieve
+          - calculate
+
+      - name: writer
+        description: Synthesizes information into clear, well-structured prose
+        model: gpt-oss-120b
+        provider: openrouter
+        system_prompt: |
+          You are a technical writer. Your task is described below. Produce clear,
+          well-structured content based on any available context.
+
+          Your assigned task: {swarm:current_task}
+        tools: []

@@ -21,9 +21,11 @@ type AgentConfig struct {
 	SystemPrompt string        `yaml:"system_prompt"`
 	Tools        []string      `yaml:"tools"`
 	SubAgents    []AgentConfig `yaml:"sub_agents,omitempty"`
-	OutputKey    string        `yaml:"output_key,omitempty"`
-	OutputAgent  string        `yaml:"output_agent,omitempty"`
-	Keywords     []string      `yaml:"keywords,omitempty"`
+	OutputKey          string        `yaml:"output_key,omitempty"`
+	OutputAgent        string        `yaml:"output_agent,omitempty"`
+	Keywords           []string      `yaml:"keywords,omitempty"`
+	MaxIterations      int           `yaml:"max_iterations,omitempty"`
+	MaxParallelWorkers int           `yaml:"max_parallel_workers,omitempty"`
 }
 
 // FindSubAgent returns the sub-agent config with the given name, or nil.
