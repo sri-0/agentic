@@ -95,7 +95,7 @@ func BuildSkillsManifest(osClient *opensearch.Client) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("\n\n<available_skills>\nUse the view_skill tool to load full instructions for any skill listed below.\n")
+	b.WriteString("\n\n<available_skills>\nUse the view_skill tool to load full instructions for any skill below. You MUST pass the exact skill name (the identifier before the colon) to view_skill.\n")
 	for _, hit := range resp.Hits.Hits {
 		var s struct {
 			Name        string `json:"name"`

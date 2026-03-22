@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agentic/pkg/db/opensearch"
 
@@ -12,7 +13,7 @@ import (
 )
 
 type ViewSkillArgs struct {
-	Name string `json:"name" desc:"The name of the skill to load (as shown in available_skills)"`
+	Name string `json:"name" desc:"The exact skill name as shown in available_skills (e.g. postmortem_guide, code_review)"`
 }
 
 type ViewSkillResult struct {
@@ -29,24 +30,29 @@ func NewViewSkillTool(osClient *opensearch.Client) (tool.Tool, error) {
 			return ViewSkillResult{Name: args.Name, Content: "skills not available (no opensearch)"}, nil
 		}
 
+		// Normalize: lowercase, trim, spaces/hyphens → underscores
+		name := strings.ToLower(strings.TrimSpace(args.Name))
+		name = strings.ReplaceAll(name, " ", "_")
+		name = strings.ReplaceAll(name, "-", "_")
+
 		query := map[string]any{
 			"size": 1,
 			"query": map[string]any{
 				"term": map[string]any{
-					"name": args.Name,
+					"name": name,
 				},
 			},
 		}
 
 		resp, err := osClient.Search(context.Background(), opensearch.IndexSkills, query)
 		if err != nil {
-			return ViewSkillResult{Name: args.Name}, fmt.Errorf("failed to search skills: %w", err)
+			return ViewSkillResult{Name: name}, fmt.Errorf("failed to search skills: %w", err)
 		}
 
 		if len(resp.Hits.Hits) == 0 {
 			return ViewSkillResult{
-				Name:    args.Name,
-				Content: fmt.Sprintf("Skill %q not found. Check the available_skills list for valid skill names.", args.Name),
+				Name:    name,
+				Content: fmt.Sprintf("Skill %q not found. Use the exact name from available_skills (e.g. postmortem_guide, not \"postmortem guide\").", args.Name),
 			}, nil
 		}
 
