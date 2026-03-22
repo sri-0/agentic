@@ -8,6 +8,17 @@ providers:
     # ssl_client_key_password_env: OPENROUTER_CLIENT_KEY_PASSWORD
     # ssl_trust_store_env: OPENROUTER_TRUST_STORE
     models:
+      - id: gpt-oss-120b
+        type: llm
+        name: GPT-OSS 120B
+        owned_by: internal
+        description: Open-source 120B parameter model.
+        context_length: 131072
+        capabilities: [tool_calling, json_mode, streaming]
+        architecture:
+          input_modalities: [text]
+          output_modalities: [text]
+
       # ── OpenAI ──────────────────────────────────────────────────────────
       - id: openai/gpt-4o
         type: llm

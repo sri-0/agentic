@@ -4,8 +4,10 @@ import (
 	"fmt"
 
 	"agentic/internal/rag"
+	"agentic/internal/tools/confluence"
 	"agentic/pkg/db/opensearch"
 
+	"github.com/rs/zerolog"
 	"google.golang.org/adk/tool"
 )
 
@@ -17,6 +19,9 @@ func ToolNames() []string {
 		"query_research_db", "query_metrics_db",
 		"trigger_alert",
 		"classify_incident", "get_incident_context",
+		"confluence_search", "confluence_read_page",
+		"view_skill",
+		"search_memories", "add_memory", "update_memory", "delete_memory", "list_memories",
 	}
 }
 
@@ -27,8 +32,11 @@ func HITLToolNames() []string {
 
 // Deps holds shared dependencies for tool construction.
 type Deps struct {
-	RAGClient *rag.Client
-	OSClient  *opensearch.Client
+	RAGClient        *rag.Client
+	OSClient         *opensearch.Client
+	ConfluenceClient *confluence.Client
+	MemoryTools      map[string]tool.Tool // keyed by tool name
+	Logger           zerolog.Logger
 }
 
 // NewToolByName creates a tool by name.
@@ -56,6 +64,17 @@ func NewToolByName(name string, deps Deps) (tool.Tool, error) {
 		return NewClassifyIncidentTool()
 	case "get_incident_context":
 		return NewGetIncidentContextTool()
+	case "confluence_search":
+		return NewConfluenceSearchTool(deps.ConfluenceClient)
+	case "confluence_read_page":
+		return NewConfluenceReadPageTool(deps.ConfluenceClient)
+	case "view_skill":
+		return NewViewSkillTool(deps.OSClient)
+	case "search_memories", "add_memory", "update_memory", "delete_memory", "list_memories":
+		if t, ok := deps.MemoryTools[name]; ok {
+			return t, nil
+		}
+		return nil, fmt.Errorf("memory tool %s not available (no memory service configured)", name)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}

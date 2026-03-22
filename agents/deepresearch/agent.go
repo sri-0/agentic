@@ -38,6 +38,7 @@ import (
 // LoopAgent safely because it's the last step in the pipeline.
 func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps) (agent.Agent, error) {
 	ragClient := deps.RAGClient
+	logger := deps.Logger
 
 	// ── Planning ──────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps)
 
 	ragRetrieval, err := agent.New(agent.Config{
 		Name: "rag_retrieval",
-		Run:  ragRetrievalRun(ragClient),
+		Run:  ragRetrievalRun(ragClient, logger),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rag_retrieval: %w", err)
@@ -88,7 +89,7 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps)
 	docLoop, err := agent.New(agent.Config{
 		Name:      "document_loop",
 		SubAgents: []agent.Agent{parallelAnalysis, findingsSummarizer},
-		Run:       documentLoopRun(ragClient, parallelAnalysis, findingsSummarizer),
+		Run:       documentLoopRun(ragClient, logger, parallelAnalysis, findingsSummarizer),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("document_loop: %w", err)
@@ -117,7 +118,7 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps)
 
 	qualityChecker, err := agent.New(agent.Config{
 		Name: "quality_checker",
-		Run:  qualityCheckerRun(),
+		Run:  qualityCheckerRun(logger),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("quality_checker: %w", err)

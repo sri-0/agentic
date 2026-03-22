@@ -10,6 +10,8 @@ const (
 	IndexPrompts    = "prompts"
 	IndexThreads    = "threads"
 	IndexMessages   = "messages"
+	IndexSkills     = "skills"
+	IndexMemories   = "memories"
 
 	// Default vector dimension (intfloat/multilingual-e5-large).
 	DefaultVectorDimension = 1024
@@ -96,6 +98,49 @@ var MessagesMapping = json.RawMessage(`{
 	}
 }`)
 
+// SkillsMapping is the index mapping for the skills store.
+var SkillsMapping = json.RawMessage(`{
+	"mappings": {
+		"properties": {
+			"name":        { "type": "keyword" },
+			"description": { "type": "text" },
+			"content":     { "type": "text", "index": false },
+			"tags":        { "type": "keyword" },
+			"version":     { "type": "integer" },
+			"created_at":  { "type": "date" },
+			"updated_at":  { "type": "date" }
+		}
+	}
+}`)
+
+// MemoriesMapping is the index mapping for the long-term memories store.
+var MemoriesMapping = json.RawMessage(`{
+	"settings": {
+		"index": {
+			"knn": true,
+			"knn.algo_param.ef_search": 256
+		}
+	},
+	"mappings": {
+		"properties": {
+			"app_name":   { "type": "keyword" },
+			"user_id":    { "type": "keyword" },
+			"content":    { "type": "text" },
+			"vector": {
+				"type":      "knn_vector",
+				"dimension": 1024,
+				"method": {
+					"name":       "hnsw",
+					"space_type": "cosinesimil",
+					"engine":     "lucene"
+				}
+			},
+			"created_at": { "type": "date" },
+			"updated_at": { "type": "date" }
+		}
+	}
+}`)
+
 // EnsureIndices creates all indices if they don't exist.
 func EnsureIndices(ctx context.Context, client *Client) error {
 	if err := client.CreateIndex(ctx, IndexEmbeddings, EmbeddingsMapping); err != nil {
@@ -107,5 +152,11 @@ func EnsureIndices(ctx context.Context, client *Client) error {
 	if err := client.CreateIndex(ctx, IndexThreads, ThreadsMapping); err != nil {
 		return err
 	}
-	return client.CreateIndex(ctx, IndexMessages, MessagesMapping)
+	if err := client.CreateIndex(ctx, IndexMessages, MessagesMapping); err != nil {
+		return err
+	}
+	if err := client.CreateIndex(ctx, IndexSkills, SkillsMapping); err != nil {
+		return err
+	}
+	return client.CreateIndex(ctx, IndexMemories, MemoriesMapping)
 }
