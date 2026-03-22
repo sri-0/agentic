@@ -52,7 +52,7 @@ func main() {
 
 	logger.Info().Strs("agents", registry.IDs()).Msg("agent registry ready")
 
-	router := server.NewRouter(registry, cfg, res.OSClient, logger)
+	router := server.NewRouter(registry, cfg, res.OSClient, res.MemoryService, logger)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{

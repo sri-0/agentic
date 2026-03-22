@@ -20,9 +20,11 @@ import (
 	"agentic/internal/tools"
 	"agentic/internal/tools/confluence"
 	"agentic/pkg/db/opensearch"
+	"agentic/pkg/memory"
 
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/session"
+	"google.golang.org/adk/tool"
 
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
@@ -41,6 +43,7 @@ type Result struct {
 	Cfg            *config.Config
 	Logger         zerolog.Logger
 	OSClient       *opensearch.Client
+	MemoryService  *memory.Service
 	Deps           tools.Deps
 	SessionService session.Service
 	HITLStore      hitl.Store
@@ -129,7 +132,21 @@ func Init(ctx context.Context) (*Result, error) {
 	}
 
 	ragClient := rag.NewClient(osClient, cfg)
-	deps := tools.Deps{RAGClient: ragClient, OSClient: osClient, ConfluenceClient: confluenceClient, Logger: logger}
+
+	// Build memory toolset
+	memorySvc := memory.NewService(osClient, cfg, logger)
+	memToolMap := make(map[string]tool.Tool)
+	memToolset, err := memory.NewToolset(memory.ToolsetConfig{Service: memorySvc})
+	if err != nil {
+		logger.Warn().Err(err).Msg("memory toolset unavailable")
+	} else {
+		for _, t := range memToolset.Tools() {
+			memToolMap[t.Name()] = t
+		}
+		logger.Info().Int("tools", len(memToolMap)).Msg("memory toolset ready")
+	}
+
+	deps := tools.Deps{RAGClient: ragClient, OSClient: osClient, ConfluenceClient: confluenceClient, MemoryTools: memToolMap, Logger: logger}
 
 	sessionService, err := agent.NewSessionService(cfg, logger)
 	if err != nil {
@@ -176,6 +193,7 @@ func Init(ctx context.Context) (*Result, error) {
 		Cfg:            cfg,
 		Logger:         logger,
 		OSClient:       osClient,
+		MemoryService:  memorySvc,
 		Deps:           deps,
 		SessionService: sessionService,
 		HITLStore:      hitlStore,

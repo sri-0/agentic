@@ -15,6 +15,7 @@ agents:
       - Search the web for current information
       - Perform mathematical calculations
       - Search and read Confluence wiki pages
+      - Long-term memory: search, save, update, and delete memories across conversations
 
       Always provide clear, well-structured responses based on the data you retrieve.
     tools:
@@ -27,6 +28,11 @@ agents:
       - confluence_search
       - confluence_read_page
       - view_skill
+      - search_memories
+      - add_memory
+      - update_memory
+      - delete_memory
+      - list_memories
 
   - id: deep-research
     type: deep-research

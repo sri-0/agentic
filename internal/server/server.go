@@ -7,15 +7,16 @@ import (
 	"agentic/internal/agent"
 	"agentic/internal/config"
 	"agentic/internal/handler"
-	oa "agentic/pkg/openapi"
 	"agentic/pkg/db/opensearch"
+	"agentic/pkg/memory"
+	oa "agentic/pkg/openapi"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog"
 )
 
 // NewRouter creates the HTTP router with all routes and middleware.
-func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, logger zerolog.Logger) *mux.Router {
+func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, logger zerolog.Logger) *mux.Router {
 	r := mux.NewRouter()
 
 	r.Use(corsMiddleware)
@@ -59,6 +60,13 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 		r.HandleFunc("/v1/skills/{id}", handler.SkillsGet(osClient, logger)).Methods("GET")
 		r.HandleFunc("/v1/skills/{id}", handler.SkillsUpdate(osClient, logger)).Methods("PUT", "OPTIONS")
 		r.HandleFunc("/v1/skills/{id}", handler.SkillsDelete(osClient, logger)).Methods("DELETE")
+
+		// Memories
+		r.HandleFunc("/v1/memories", handler.MemoriesList(memorySvc, logger)).Methods("GET")
+		r.HandleFunc("/v1/memories", handler.MemoriesAdd(memorySvc, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/memories/search", handler.MemoriesSearch(memorySvc, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/memories/{id}", handler.MemoriesUpdate(memorySvc, logger)).Methods("PUT", "OPTIONS")
+		r.HandleFunc("/v1/memories/{id}", handler.MemoriesDelete(memorySvc, logger)).Methods("DELETE")
 
 		// Thread messages
 		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesList(osClient, logger)).Methods("GET")
