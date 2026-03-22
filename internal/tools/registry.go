@@ -6,6 +6,7 @@ import (
 	"agentic/internal/rag"
 	"agentic/pkg/db/opensearch"
 
+	"github.com/rs/zerolog"
 	"google.golang.org/adk/tool"
 )
 
@@ -29,6 +30,7 @@ func HITLToolNames() []string {
 type Deps struct {
 	RAGClient *rag.Client
 	OSClient  *opensearch.Client
+	Logger    zerolog.Logger
 }
 
 // NewToolByName creates a tool by name.

@@ -115,7 +115,7 @@ func Init(ctx context.Context) (*Result, error) {
 	}
 
 	ragClient := rag.NewClient(osClient, cfg)
-	deps := tools.Deps{RAGClient: ragClient, OSClient: osClient}
+	deps := tools.Deps{RAGClient: ragClient, OSClient: osClient, Logger: logger}
 
 	sessionService, err := agent.NewSessionService(cfg, logger)
 	if err != nil {

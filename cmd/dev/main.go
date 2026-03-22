@@ -15,6 +15,7 @@ import (
 	"os"
 
 	"agentic/internal/bootstrap"
+	"agentic/internal/logbridge"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/cmd/launcher"
@@ -39,6 +40,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "loader: %v\n", err)
 		os.Exit(1)
 	}
+
+	logbridge.Setup(res.Logger)
 
 	config := &launcher.Config{
 		AgentLoader:    loader,
