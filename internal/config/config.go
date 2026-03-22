@@ -21,6 +21,9 @@ type Config struct {
 	OpenSearchUsername  string `env:"OPENSEARCH_USERNAME"`
 	OpenSearchPassword  string `env:"OPENSEARCH_PASSWORD"`
 
+	ConfluenceURL string `env:"CONFLUENCE_URL"` // e.g. "http://localhost:8090"
+	ConfluencePAT string `env:"CONFLUENCE_PAT"` // Personal Access Token
+
 	Valkey       *pkgvalkey.Config `env:",noinit"`
 	HITLStore    string           `env:"HITL_STORE,default=memory"`    // "memory" or "valkey"
 	SessionStore string           `env:"SESSION_STORE,default=memory"` // "memory" or "valkey"

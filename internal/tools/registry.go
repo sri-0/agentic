@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"agentic/internal/rag"
+	"agentic/internal/tools/confluence"
 	"agentic/pkg/db/opensearch"
 
 	"github.com/rs/zerolog"
@@ -18,6 +19,7 @@ func ToolNames() []string {
 		"query_research_db", "query_metrics_db",
 		"trigger_alert",
 		"classify_incident", "get_incident_context",
+		"confluence_search", "confluence_read_page",
 	}
 }
 
@@ -28,9 +30,10 @@ func HITLToolNames() []string {
 
 // Deps holds shared dependencies for tool construction.
 type Deps struct {
-	RAGClient *rag.Client
-	OSClient  *opensearch.Client
-	Logger    zerolog.Logger
+	RAGClient        *rag.Client
+	OSClient         *opensearch.Client
+	ConfluenceClient *confluence.Client
+	Logger           zerolog.Logger
 }
 
 // NewToolByName creates a tool by name.
@@ -58,6 +61,10 @@ func NewToolByName(name string, deps Deps) (tool.Tool, error) {
 		return NewClassifyIncidentTool()
 	case "get_incident_context":
 		return NewGetIncidentContextTool()
+	case "confluence_search":
+		return NewConfluenceSearchTool(deps.ConfluenceClient)
+	case "confluence_read_page":
+		return NewConfluenceReadPageTool(deps.ConfluenceClient)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}

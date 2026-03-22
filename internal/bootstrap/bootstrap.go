@@ -18,6 +18,7 @@ import (
 	"agentic/internal/hitl"
 	"agentic/internal/rag"
 	"agentic/internal/tools"
+	"agentic/internal/tools/confluence"
 	"agentic/pkg/db/opensearch"
 
 	adkagent "google.golang.org/adk/agent"
@@ -114,8 +115,21 @@ func Init(ctx context.Context) (*Result, error) {
 		}
 	}
 
+	var confluenceClient *confluence.Client
+	if cfg.ConfluenceURL != "" {
+		confluenceClient = confluence.New(confluence.Config{
+			BaseURL: cfg.ConfluenceURL,
+			PAT:     cfg.ConfluencePAT,
+		}, logger)
+		if err := confluenceClient.Ping(ctx); err != nil {
+			logger.Warn().Err(err).Str("url", cfg.ConfluenceURL).Msg("confluence not reachable, confluence tools will degrade")
+		} else {
+			logger.Info().Str("url", cfg.ConfluenceURL).Msg("confluence connected")
+		}
+	}
+
 	ragClient := rag.NewClient(osClient, cfg)
-	deps := tools.Deps{RAGClient: ragClient, OSClient: osClient, Logger: logger}
+	deps := tools.Deps{RAGClient: ragClient, OSClient: osClient, ConfluenceClient: confluenceClient, Logger: logger}
 
 	sessionService, err := agent.NewSessionService(cfg, logger)
 	if err != nil {

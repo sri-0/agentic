@@ -14,6 +14,7 @@ agents:
       - Search documents in the knowledge base
       - Search the web for current information
       - Perform mathematical calculations
+      - Search and read Confluence wiki pages
 
       Always provide clear, well-structured responses based on the data you retrieve.
     tools:
@@ -23,6 +24,8 @@ agents:
       - opensearch_retrieve
       - web_search
       - calculate
+      - confluence_search
+      - confluence_read_page
 
   - id: deep-research
     type: deep-research
