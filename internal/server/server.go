@@ -53,6 +53,13 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 		r.HandleFunc("/v1/threads/{id}", handler.ThreadsUpdate(osClient, logger)).Methods("PUT", "OPTIONS")
 		r.HandleFunc("/v1/threads/{id}", handler.ThreadsDelete(osClient, logger)).Methods("DELETE")
 
+		// Skills CRUD
+		r.HandleFunc("/v1/skills", handler.SkillsList(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/skills", handler.SkillsCreate(osClient, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/skills/{id}", handler.SkillsGet(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/skills/{id}", handler.SkillsUpdate(osClient, logger)).Methods("PUT", "OPTIONS")
+		r.HandleFunc("/v1/skills/{id}", handler.SkillsDelete(osClient, logger)).Methods("DELETE")
+
 		// Thread messages
 		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesList(osClient, logger)).Methods("GET")
 		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesCreate(osClient, logger)).Methods("POST", "OPTIONS")

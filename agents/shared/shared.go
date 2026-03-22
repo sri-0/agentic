@@ -1,11 +1,15 @@
 package shared
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"agentic/internal/config"
 	"agentic/internal/tools"
+	"agentic/pkg/db/opensearch"
 	genaiopenai "agentic/pkg/genai/openai"
 
 	"google.golang.org/adk/agent"
@@ -70,6 +74,40 @@ func BuildLLMAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.
 	}
 
 	return llmagent.New(llmCfg)
+}
+
+// BuildSkillsManifest fetches all skills from OpenSearch and returns a formatted
+// <available_skills> block for injection into agent system prompts.
+func BuildSkillsManifest(osClient *opensearch.Client) string {
+	if osClient == nil {
+		return ""
+	}
+
+	query := map[string]any{
+		"size":    100,
+		"_source": []string{"name", "description"},
+		"query":   map[string]any{"match_all": map[string]any{}},
+	}
+
+	resp, err := osClient.Search(context.Background(), opensearch.IndexSkills, query)
+	if err != nil || len(resp.Hits.Hits) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n<available_skills>\nUse the view_skill tool to load full instructions for any skill listed below.\n")
+	for _, hit := range resp.Hits.Hits {
+		var s struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		if err := json.Unmarshal(hit.Source, &s); err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
+	}
+	b.WriteString("</available_skills>")
+	return b.String()
 }
 
 func RequireSubAgent(cfg *config.Config, agentCfg *config.AgentConfig, name string, deps tools.Deps) (agent.Agent, error) {

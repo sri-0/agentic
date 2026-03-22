@@ -20,6 +20,7 @@ func ToolNames() []string {
 		"trigger_alert",
 		"classify_incident", "get_incident_context",
 		"confluence_search", "confluence_read_page",
+		"view_skill",
 	}
 }
 
@@ -65,6 +66,8 @@ func NewToolByName(name string, deps Deps) (tool.Tool, error) {
 		return NewConfluenceSearchTool(deps.ConfluenceClient)
 	case "confluence_read_page":
 		return NewConfluenceReadPageTool(deps.ConfluenceClient)
+	case "view_skill":
+		return NewViewSkillTool(deps.OSClient)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}

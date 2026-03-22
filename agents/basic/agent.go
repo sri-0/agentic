@@ -30,11 +30,16 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps)
 		return nil, err
 	}
 
+	instruction := agentCfg.SystemPrompt
+	if manifest := shared.BuildSkillsManifest(deps.OSClient); manifest != "" {
+		instruction += manifest
+	}
+
 	return llmagent.New(llmagent.Config{
 		Name:        agentCfg.Name,
 		Description: agentCfg.Description,
 		Model:       m,
-		Instruction: agentCfg.SystemPrompt,
+		Instruction: instruction,
 		Tools:       agentTools,
 	})
 }

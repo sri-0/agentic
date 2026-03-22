@@ -26,6 +26,7 @@ agents:
       - calculate
       - confluence_search
       - confluence_read_page
+      - view_skill
 
   - id: deep-research
     type: deep-research
