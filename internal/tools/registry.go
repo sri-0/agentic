@@ -21,6 +21,7 @@ func ToolNames() []string {
 		"classify_incident", "get_incident_context",
 		"confluence_search", "confluence_read_page",
 		"view_skill",
+		"emit_artifact",
 		"search_memories", "add_memory", "update_memory", "delete_memory", "list_memories",
 	}
 }
@@ -70,6 +71,8 @@ func NewToolByName(name string, deps Deps) (tool.Tool, error) {
 		return NewConfluenceReadPageTool(deps.ConfluenceClient)
 	case "view_skill":
 		return NewViewSkillTool(deps.OSClient)
+	case "emit_artifact":
+		return NewEmitArtifactTool()
 	case "search_memories", "add_memory", "update_memory", "delete_memory", "list_memories":
 		if t, ok := deps.MemoryTools[name]; ok {
 			return t, nil

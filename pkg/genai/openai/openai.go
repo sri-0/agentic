@@ -127,6 +127,11 @@ func (m *Model) generateStream(ctx context.Context, req *model.LLMRequest) iter.
 			return
 		}
 
+		// Request a terminal usage chunk (stream_options.include_usage).
+		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		}
+
 		stream := m.client.Chat.Completions.NewStreaming(ctx, params)
 		acc := openai.ChatCompletionAccumulator{}
 
@@ -135,17 +140,37 @@ func (m *Model) generateStream(ctx context.Context, req *model.LLMRequest) iter.
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
 
-			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-				llmResp := &model.LLMResponse{
-					Content: &genai.Content{
-						Role:  genai.RoleModel,
-						Parts: []*genai.Part{{Text: chunk.Choices[0].Delta.Content}},
-					},
-					Partial:      true,
-					TurnComplete: false,
+			if len(chunk.Choices) > 0 {
+				delta := chunk.Choices[0].Delta
+
+				// Reasoning/thinking tokens (OpenRouter-compatible `reasoning`
+				// field, surfaced via ExtraFields since the SDK delta lacks it).
+				if reasoning := extractReasoningDelta(delta); reasoning != "" {
+					thoughtResp := &model.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{Text: reasoning, Thought: true}},
+						},
+						Partial:      true,
+						TurnComplete: false,
+					}
+					if !yield(thoughtResp, nil) {
+						return
+					}
 				}
-				if !yield(llmResp, nil) {
-					return
+
+				if delta.Content != "" {
+					llmResp := &model.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{Text: delta.Content}},
+						},
+						Partial:      true,
+						TurnComplete: false,
+					}
+					if !yield(llmResp, nil) {
+						return
+					}
 				}
 			}
 		}
@@ -615,6 +640,25 @@ func convertInlineDataToImage(data *genai.Blob) *openai.ChatCompletionContentPar
 			Detail: "auto",
 		},
 	}
+}
+
+// extractReasoningDelta pulls OpenRouter/Ollama-style reasoning tokens from a
+// streaming delta. The OpenAI SDK's delta struct has no `reasoning` field, so
+// the value (when present) lands in JSON.ExtraFields as a raw JSON string.
+func extractReasoningDelta(delta openai.ChatCompletionChunkChoiceDelta) string {
+	field, ok := delta.JSON.ExtraFields["reasoning"]
+	if !ok {
+		return ""
+	}
+	raw := field.Raw()
+	if raw == "" || raw == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // convertUsageMetadata converts OpenAI usage stats to genai format.

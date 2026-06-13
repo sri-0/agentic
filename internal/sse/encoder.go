@@ -82,6 +82,35 @@ func (b *ChunkBuilder) TextDelta(content string) types.ChatCompletionChunk {
 	return b.base(openai.ChatCompletionChunkChoiceDelta{Content: content}, "")
 }
 
+// ReasoningDelta mirrors TextDelta but writes the OpenRouter-compatible
+// `reasoning` field on the delta instead of `content`. Used to surface
+// the output agent's thinking tokens to the frontend, which maps
+// choices[0].delta.reasoning to a native reasoning part.
+func (b *ChunkBuilder) ReasoningDelta(text string) types.ReasoningChunk {
+	return types.ReasoningChunk{
+		ID:      b.RequestID,
+		Object:  "chat.completion.chunk",
+		Created: time.Now().Unix(),
+		Model:   b.Model,
+		Choices: []types.ReasoningChunkChoice{
+			{Index: 0, Delta: types.ReasoningDelta{Reasoning: text}},
+		},
+		ThreadID: b.ThreadID,
+	}
+}
+
+// FinishWithUsage emits a terminal chunk carrying token usage statistics,
+// matching the OpenAI stream_options:{include_usage:true} final chunk shape.
+func (b *ChunkBuilder) FinishWithUsage(reason string, promptTokens, completionTokens, totalTokens int) types.ChatCompletionChunk {
+	chunk := b.base(openai.ChatCompletionChunkChoiceDelta{}, reason)
+	chunk.Usage = openai.CompletionUsage{
+		PromptTokens:     int64(promptTokens),
+		CompletionTokens: int64(completionTokens),
+		TotalTokens:      int64(totalTokens),
+	}
+	return chunk
+}
+
 func (b *ChunkBuilder) ToolCallDelta(index int64, id, name, args string) types.ChatCompletionChunk {
 	return b.base(openai.ChatCompletionChunkChoiceDelta{
 		ToolCalls: []openai.ChatCompletionChunkChoiceDeltaToolCall{

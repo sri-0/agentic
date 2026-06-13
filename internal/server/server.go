@@ -5,18 +5,21 @@ import (
 	"time"
 
 	"agentic/internal/agent"
+	internalagents "agentic/internal/agents"
 	"agentic/internal/config"
 	"agentic/internal/handler"
 	"agentic/pkg/db/opensearch"
 	"agentic/pkg/memory"
 	oa "agentic/pkg/openapi"
 
+	"google.golang.org/adk/session"
+
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog"
 )
 
 // NewRouter creates the HTTP router with all routes and middleware.
-func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, logger zerolog.Logger) *mux.Router {
+func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, logger zerolog.Logger) *mux.Router {
 	r := mux.NewRouter()
 
 	r.Use(corsMiddleware)
@@ -31,10 +34,16 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 	r.HandleFunc("/v1/openapi.json", handler.OpenAPISpec(r, specCfg)).Methods("GET")
 	r.HandleFunc("/docs", handler.APIDocs(cfg.AppName)).Methods("GET")
 	r.HandleFunc("/v1/models", handler.Models(cfg)).Methods("GET")
+	r.HandleFunc("/v1/agents", handler.Agents(cfg)).Methods("GET")
 	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/messages", handler.Messages(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, logger)).Methods("POST", "OPTIONS")
+
+	// Internal agent endpoints
+	if internalAgents != nil {
+		r.HandleFunc("/v1/suggestions", handler.Suggestions(internalAgents, sessionSvc, logger)).Methods("POST", "OPTIONS")
+	}
 
 	// RAG search endpoint (standalone vector/text search)
 	if osClient != nil {
@@ -82,7 +91,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
