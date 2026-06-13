@@ -105,7 +105,7 @@ func makeTextAgent(t *testing.T) adkagent.Agent {
 func TestChatHandler_AgentMode_StreamsSSE(t *testing.T) {
 	core := newTestCore(t, makeTextAgent(t))
 	reg := newTestRegistry(t, core)
-	handler := Chat(reg, core.Config, nil, zerolog.Nop())
+	handler := Chat(reg, core.Config, nil, nil, nil, zerolog.Nop())
 
 	body := `{"model":"test-agent","messages":[{"role":"user","content":"hi"}],"stream":true,"thread_id":"t1"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
@@ -177,7 +177,7 @@ func TestChatHandler_ProxyMode(t *testing.T) {
 	}
 
 	reg := newTestRegistry(t, core)
-	handler := Chat(reg, core.Config, nil, zerolog.Nop())
+	handler := Chat(reg, core.Config, nil, nil, nil, zerolog.Nop())
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
@@ -200,7 +200,7 @@ func TestChatHandler_ProxyMode(t *testing.T) {
 func TestChatHandler_RejectsEmptyMessages(t *testing.T) {
 	core := newTestCore(t, makeTextAgent(t))
 	reg := newTestRegistry(t, core)
-	handler := Chat(reg, core.Config, nil, zerolog.Nop())
+	handler := Chat(reg, core.Config, nil, nil, nil, zerolog.Nop())
 
 	body := `{"model":"test-agent","messages":[]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))

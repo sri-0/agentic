@@ -19,7 +19,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all routes and middleware.
-func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, logger zerolog.Logger) *mux.Router {
+func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, logger zerolog.Logger) *mux.Router {
 	r := mux.NewRouter()
 
 	r.Use(corsMiddleware)
@@ -35,7 +35,7 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 	r.HandleFunc("/docs", handler.APIDocs(cfg.AppName)).Methods("GET")
 	r.HandleFunc("/v1/models", handler.Models(cfg)).Methods("GET")
 	r.HandleFunc("/v1/agents", handler.Agents(cfg)).Methods("GET")
-	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, logger)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, agentConfigs, buildOverrideCore, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/messages", handler.Messages(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, logger)).Methods("POST", "OPTIONS")

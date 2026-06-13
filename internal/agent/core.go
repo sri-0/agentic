@@ -31,6 +31,39 @@ type Core struct {
 	Logger         zerolog.Logger
 }
 
+// OverrideCoreFunc builds a per-request *Core for the given agent config with
+// the agent's (and all sub-agents') model overridden to modelID/provider. It is
+// supplied by the server wiring so the chat handler can rebuild an agent tree on
+// demand. It may be nil, in which case no override is performed.
+type OverrideCoreFunc func(agentCfg *config.AgentConfig, modelID, provider string) (*Core, error)
+
+// ConfigureCore sets the OutputAgent, SubAgentNames, and ModelID fields on a
+// Core from its AgentConfig. Shared by the startup registration loop and the
+// per-request override builder so both produce identically configured cores.
+//
+// ModelID is resolved for context_window lookup: prefer the output agent's
+// model when it maps to a known sub-agent, else the root model. When the config
+// has been built with a model override, every sub-agent carries the override
+// model, so ModelID ends up as the override model id (which is what we want).
+func ConfigureCore(core *Core, agentCfg *config.AgentConfig) {
+	if agentCfg.OutputAgent != "" {
+		core.OutputAgent = agentCfg.OutputAgent
+	} else if len(agentCfg.SubAgents) > 0 {
+		core.OutputAgent = agentCfg.SubAgents[len(agentCfg.SubAgents)-1].Name
+	}
+
+	// Record sub-agent names (multi-agent runs publish a task-list snapshot).
+	core.SubAgentNames = nil
+	for _, sa := range agentCfg.SubAgents {
+		core.SubAgentNames = append(core.SubAgentNames, sa.Name)
+	}
+
+	core.ModelID = agentCfg.Model
+	if sa := agentCfg.FindSubAgent(core.OutputAgent); sa != nil && sa.Model != "" {
+		core.ModelID = sa.Model
+	}
+}
+
 // NewHITLStore creates a hitl.Store based on cfg.HITLStore.
 // Set HITL_STORE=valkey to use Valkey/Redis. Defaults to in-memory.
 func NewHITLStore(cfg *config.Config, logger zerolog.Logger) (hitl.Store, error) {

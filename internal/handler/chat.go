@@ -18,7 +18,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
+func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -94,6 +94,37 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			logger.Info().Str("model", resolvedModel).Str("upstream", baseURL).Bool("use_rag", req.UseRAG).Msg("chat: proxying to upstream")
 			proxy.ForwardTo(w, baseURL, apiKey, "/chat/completions", rawBody, client)
 			return
+		}
+
+		// Per-request model override: when the request selects BOTH an agent and
+		// a distinct, valid model, rebuild the agent tree (root + all sub-agents)
+		// with that model and use it for THIS request only. Falls back to the
+		// registry core if the model is unknown or the rebuild fails.
+		if buildOverrideCore != nil && req.Model != "" && req.Model != agentID && cfg.Models != nil {
+			resolvedModelID := cfg.Models.ResolveModelID(req.Model)
+			if model := cfg.Models.FindModel(resolvedModelID); model != nil {
+				provider := model.ProviderID
+				if provider == "" {
+					if p := cfg.Models.FindProviderForModel(resolvedModelID); p != nil {
+						provider = p.ID
+					}
+				}
+				if agentCfg := agentConfigs[agentID]; agentCfg != nil {
+					if oc, err := buildOverrideCore(agentCfg, resolvedModelID, provider); err != nil {
+						logger.Warn().Err(err).
+							Str("agent_id", agentID).
+							Str("override_model", resolvedModelID).
+							Msg("chat: model override build failed, falling back to default agent core")
+					} else {
+						logger.Info().
+							Str("agent_id", agentID).
+							Str("override_model", resolvedModelID).
+							Str("override_provider", provider).
+							Msg("chat: using per-request model override for agent")
+						core = oc
+					}
+				}
+			}
 		}
 
 		threadID := req.ThreadID

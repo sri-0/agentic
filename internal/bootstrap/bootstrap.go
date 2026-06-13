@@ -54,6 +54,23 @@ var builders = map[string]agentBuilder{
 	"codeguide":     codeguide.NewAgent,
 }
 
+// BuildAgentTree builds a single root agent (and its sub-agent hierarchy) for
+// the given agent config, using the registered builder for its type. An empty
+// Type defaults to "basic". This is the same logic the startup loop uses, but
+// exposed so callers can build agent trees per-request (e.g. with a model
+// override).
+func BuildAgentTree(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps) (adkagent.Agent, error) {
+	agentType := agentCfg.Type
+	if agentType == "" {
+		agentType = "basic"
+	}
+	build, ok := builders[agentType]
+	if !ok {
+		return nil, fmt.Errorf("unknown agent type %q", agentType)
+	}
+	return build(cfg, agentCfg, deps)
+}
+
 // Result holds everything produced by Init.
 type Result struct {
 	Cfg            *config.Config
@@ -187,26 +204,16 @@ func Init(ctx context.Context) (*Result, error) {
 
 	for i := range agentsCfg.Agents {
 		ac := &agentsCfg.Agents[i]
-		agentType := ac.Type
-		if agentType == "" {
-			agentType = "basic"
-		}
 
-		build, ok := builders[agentType]
-		if !ok {
-			logger.Error().Str("agent", ac.ID).Str("type", agentType).Msg("unknown agent type, skipping")
-			continue
-		}
-
-		a, err := build(cfg, ac, deps)
+		a, err := BuildAgentTree(cfg, ac, deps)
 		if err != nil {
-			logger.Error().Err(err).Str("agent", ac.ID).Msg("failed to build agent, skipping")
+			logger.Error().Err(err).Str("agent", ac.ID).Str("type", ac.Type).Msg("failed to build agent, skipping")
 			continue
 		}
 
 		agents[ac.ID] = a
 		agentConfigs[ac.ID] = ac
-		logger.Info().Str("agent", ac.ID).Str("type", agentType).Msg("agent built")
+		logger.Info().Str("agent", ac.ID).Str("type", ac.Type).Msg("agent built")
 	}
 
 	if len(agents) == 0 {
