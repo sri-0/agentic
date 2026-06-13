@@ -17,17 +17,16 @@ import (
 // getUserID extracts the user ID from the request.
 // Currently uses X-User-ID header; will be replaced with JWT extraction.
 func getUserID(r *http.Request) string {
-	return r.Header.Get("X-User-ID")
+	if userID := r.Header.Get("X-User-ID"); userID != "" {
+		return userID
+	}
+	return "anonymous"
 }
 
 // ThreadsList returns all threads for the authenticated user, ordered by pinned then updated_at.
 func ThreadsList(osClient *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := getUserID(r)
-		if userID == "" {
-			http.Error(w, `{"error":"missing user identity"}`, http.StatusUnauthorized)
-			return
-		}
 
 		size := 100
 		query := map[string]any{
@@ -64,10 +63,6 @@ func ThreadsList(osClient *opensearch.Client, logger zerolog.Logger) http.Handle
 func ThreadsCreate(osClient *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := getUserID(r)
-		if userID == "" {
-			http.Error(w, `{"error":"missing user identity"}`, http.StatusUnauthorized)
-			return
-		}
 
 		var req struct {
 			Title     string  `json:"title"`
@@ -487,4 +482,3 @@ func getBool(m map[string]any, key string) bool {
 func strPtr(s string) *string {
 	return &s
 }
-

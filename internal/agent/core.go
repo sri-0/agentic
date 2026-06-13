@@ -25,6 +25,8 @@ type Core struct {
 	Interrupts     hitl.Store
 	AgentID        string
 	OutputAgent    string // name of the agent whose output goes to choices[].delta.content
+	ModelID        string // resolved model id of the (output) agent, for context_length lookup
+	SubAgentNames  []string // names of sub-agents (for multi-agent task-list snapshots); empty => single-agent run
 	Config         *config.Config
 	Logger         zerolog.Logger
 }

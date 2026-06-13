@@ -11,16 +11,25 @@ import (
 	"time"
 
 	"agentic/agents/basic"
+	"agentic/agents/codeguide"
+	"agentic/agents/coordinator"
 	"agentic/agents/deepresearch"
+	"agentic/agents/explore"
+	"agentic/agents/plan"
 	"agentic/agents/swarm"
 	"agentic/agents/triage"
+	"agentic/agents/verification"
 	"agentic/internal/agent"
+	internalagents "agentic/internal/agents"
 	"agentic/internal/config"
 	"agentic/internal/hitl"
+	internalmemory "agentic/internal/memory"
+	"agentic/internal/prompts"
 	"agentic/internal/rag"
 	"agentic/internal/tools"
 	"agentic/internal/tools/confluence"
 	"agentic/pkg/db/opensearch"
+	pkgvalkey "agentic/pkg/db/valkey"
 	"agentic/pkg/memory"
 
 	adkagent "google.golang.org/adk/agent"
@@ -38,6 +47,11 @@ var builders = map[string]agentBuilder{
 	"deep-research": deepresearch.NewAgent,
 	"triage":        triage.NewAgent,
 	"swarm":         swarm.NewAgent,
+	"explore":       explore.NewAgent,
+	"plan":          plan.NewAgent,
+	"verification":  verification.NewAgent,
+	"coordinator":   coordinator.NewAgent,
+	"codeguide":     codeguide.NewAgent,
 }
 
 // Result holds everything produced by Init.
@@ -53,6 +67,14 @@ type Result struct {
 	Agents map[string]adkagent.Agent
 	// AgentConfigs keyed by agent config ID.
 	AgentConfigs map[string]*config.AgentConfig
+	// Internal agents for system operations (compaction, session memory, suggestions, etc.)
+	InternalAgents *internalagents.Registry
+	// Prompt template store loaded from config/prompts/
+	PromptStore *prompts.Store
+	// Session memory service (structured notes in Valkey)
+	SessionMemory *internalmemory.SessionMemory
+	// Compaction service (context window management)
+	Compaction *internalmemory.CompactionService
 }
 
 // Init loads config, connects to OpenSearch, and builds all agents from
@@ -191,6 +213,38 @@ func Init(ctx context.Context) (*Result, error) {
 		return nil, fmt.Errorf("no agents loaded successfully")
 	}
 
+	// Load prompt templates
+	promptStore, err := prompts.NewStore(filepath.Join(configDir, "prompts"))
+	if err != nil {
+		logger.Warn().Err(err).Msg("prompt templates not loaded, internal agents will be unavailable")
+		promptStore = nil
+	} else {
+		logger.Info().Strs("templates", promptStore.Names()).Msg("prompt templates loaded")
+	}
+
+	// Build internal agents (compaction, session memory, suggestions, etc.)
+	var internalReg *internalagents.Registry
+	var sessionMem *internalmemory.SessionMemory
+	var compactionSvc *internalmemory.CompactionService
+
+	if promptStore != nil {
+		internalReg = internalagents.BuildAll(cfg, promptStore, sessionService, logger)
+
+		// Session memory requires Valkey
+		if cfg.Valkey != nil {
+			valkeyInstance, err := pkgvalkey.New(ctx, *cfg.Valkey)
+			if err != nil {
+				logger.Warn().Err(err).Msg("valkey not available for session memory")
+			} else {
+				sessionMem = internalmemory.NewSessionMemory(valkeyInstance, promptStore, internalReg, sessionService, logger)
+				logger.Info().Msg("session memory service ready")
+			}
+		}
+
+		compactionSvc = internalmemory.NewCompactionService(promptStore, internalReg, sessionService, logger)
+		logger.Info().Msg("compaction service ready")
+	}
+
 	return &Result{
 		Cfg:            cfg,
 		Logger:         logger,
@@ -201,5 +255,9 @@ func Init(ctx context.Context) (*Result, error) {
 		HITLStore:      hitlStore,
 		Agents:         agents,
 		AgentConfigs:   agentConfigs,
+		InternalAgents: internalReg,
+		PromptStore:    promptStore,
+		SessionMemory:  sessionMem,
+		Compaction:     compactionSvc,
 	}, nil
 }

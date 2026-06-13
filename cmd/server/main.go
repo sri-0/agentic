@@ -42,6 +42,18 @@ func main() {
 			core.OutputAgent = agentCfg.SubAgents[len(agentCfg.SubAgents)-1].Name
 		}
 
+		// Record sub-agent names (multi-agent runs publish a task-list snapshot).
+		for _, sa := range agentCfg.SubAgents {
+			core.SubAgentNames = append(core.SubAgentNames, sa.Name)
+		}
+
+		// Resolve the model id used for context_window lookup. Prefer the
+		// output agent's model when it maps to a known sub-agent, else the root.
+		core.ModelID = agentCfg.Model
+		if sa := agentCfg.FindSubAgent(core.OutputAgent); sa != nil && sa.Model != "" {
+			core.ModelID = sa.Model
+		}
+
 		registry.Register(id, core)
 		logger.Info().Str("agent", id).Msg("agent registered")
 	}
@@ -52,7 +64,7 @@ func main() {
 
 	logger.Info().Strs("agents", registry.IDs()).Msg("agent registry ready")
 
-	router := server.NewRouter(registry, cfg, res.OSClient, res.MemoryService, logger)
+	router := server.NewRouter(registry, cfg, res.OSClient, res.MemoryService, res.InternalAgents, res.SessionService, logger)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{

@@ -55,8 +55,18 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			messages = rag.AugmentMessages(r.Context(), cfg, osClient, messages, logger)
 		}
 
-		// Try to find an agent core for this model
-		core := registry.Get(req.Model)
+		// Prefer an explicit agent selector while preserving legacy model=agent routing.
+		explicitAgentID := req.RouteAgentID()
+		agentID := explicitAgentID
+		if agentID == "" {
+			agentID = req.Model
+		}
+		core := registry.Get(agentID)
+		if explicitAgentID != "" && core == nil {
+			logger.Warn().Str("agent_id", explicitAgentID).Msg("chat: agent not found")
+			http.Error(w, fmt.Sprintf(`{"error": "agent %q not found"}`, explicitAgentID), http.StatusNotFound)
+			return
+		}
 		if core == nil {
 			// Not an agent — proxy to upstream provider with (possibly RAG-augmented) messages
 			baseURL, apiKey, client := agent.ProxyProvider(cfg, req.Model)
@@ -101,6 +111,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 		logger.Info().
 			Str("thread_id", threadID).
 			Str("agent_id", core.AgentID).
+			Str("requested_model", req.Model).
 			Int("messages", len(messages)).
 			Bool("use_rag", req.UseRAG).
 			Bool("stream", isStream).

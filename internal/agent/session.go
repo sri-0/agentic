@@ -27,9 +27,16 @@ func NewSessionManager(service session.Service, appName string, logger zerolog.L
 }
 
 // GetOrCreate ensures a session exists for the given threadID, creating one if needed.
-func (m *SessionManager) GetOrCreate(ctx context.Context, threadID string) error {
+// userID defaults to "default" if empty.
+func (m *SessionManager) GetOrCreate(ctx context.Context, threadID string, userID ...string) error {
+	uid := "default"
+	if len(userID) > 0 && userID[0] != "" {
+		uid = userID[0]
+	}
+
+	key := uid + ":" + threadID
 	m.mu.RLock()
-	exists := m.known[threadID]
+	exists := m.known[key]
 	m.mu.RUnlock()
 
 	if exists {
@@ -40,21 +47,21 @@ func (m *SessionManager) GetOrCreate(ctx context.Context, threadID string) error
 	defer m.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if m.known[threadID] {
+	if m.known[key] {
 		return nil
 	}
 
 	_, err := m.service.Create(ctx, &session.CreateRequest{
 		AppName:   m.appName,
-		UserID:    "default",
+		UserID:    uid,
 		SessionID: threadID,
 	})
 	if err != nil {
 		return err
 	}
 
-	m.known[threadID] = true
-	m.logger.Debug().Str("thread_id", threadID).Msg("created session")
+	m.known[key] = true
+	m.logger.Debug().Str("thread_id", threadID).Str("user_id", uid).Msg("created session")
 	return nil
 }
 
