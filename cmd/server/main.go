@@ -11,6 +11,7 @@ import (
 
 	"agentic/internal/agent"
 	"agentic/internal/bootstrap"
+	"agentic/internal/config"
 	"agentic/internal/server"
 )
 
@@ -36,26 +37,29 @@ func main() {
 			continue
 		}
 
-		if agentCfg.OutputAgent != "" {
-			core.OutputAgent = agentCfg.OutputAgent
-		} else if len(agentCfg.SubAgents) > 0 {
-			core.OutputAgent = agentCfg.SubAgents[len(agentCfg.SubAgents)-1].Name
-		}
-
-		// Record sub-agent names (multi-agent runs publish a task-list snapshot).
-		for _, sa := range agentCfg.SubAgents {
-			core.SubAgentNames = append(core.SubAgentNames, sa.Name)
-		}
-
-		// Resolve the model id used for context_window lookup. Prefer the
-		// output agent's model when it maps to a known sub-agent, else the root.
-		core.ModelID = agentCfg.Model
-		if sa := agentCfg.FindSubAgent(core.OutputAgent); sa != nil && sa.Model != "" {
-			core.ModelID = sa.Model
-		}
+		agent.ConfigureCore(core, agentCfg)
 
 		registry.Register(id, core)
 		logger.Info().Str("agent", id).Msg("agent registered")
+	}
+
+	// buildOverrideCore rebuilds an agent's full tree per-request with the
+	// selected model applied to the root and every sub-agent, then returns a
+	// configured *Core. Used when a chat request selects both an agent and a
+	// model. Agents are cheap structs + model clients, so per-request builds are
+	// acceptable.
+	buildOverrideCore := func(agentCfg *config.AgentConfig, modelID, provider string) (*agent.Core, error) {
+		oc := agentCfg.WithModelOverride(modelID, provider)
+		tree, err := bootstrap.BuildAgentTree(cfg, oc, res.Deps)
+		if err != nil {
+			return nil, err
+		}
+		core, err := agent.NewCoreWithAgent(cfg, oc, tree, res.HITLStore, res.SessionService, logger)
+		if err != nil {
+			return nil, err
+		}
+		agent.ConfigureCore(core, oc)
+		return core, nil
 	}
 
 	if len(registry.IDs()) == 0 {
@@ -64,7 +68,7 @@ func main() {
 
 	logger.Info().Strs("agents", registry.IDs()).Msg("agent registry ready")
 
-	router := server.NewRouter(registry, cfg, res.OSClient, res.MemoryService, res.InternalAgents, res.SessionService, logger)
+	router := server.NewRouter(registry, cfg, res.OSClient, res.MemoryService, res.InternalAgents, res.SessionService, res.AgentConfigs, buildOverrideCore, logger)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{
