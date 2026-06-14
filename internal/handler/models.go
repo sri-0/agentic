@@ -83,6 +83,9 @@ func buildAgentEntry(a config.AgentConfig, created int64) map[string]any {
 		"tools":       a.Tools,
 		"sub_agents":  buildSubAgentEntries(a.SubAgents),
 	}
+	if a.SystemPrompt != "" {
+		entry["system_prompt"] = a.SystemPrompt
+	}
 	if a.OutputKey != "" {
 		entry["output_key"] = a.OutputKey
 	}
@@ -104,7 +107,7 @@ func buildAgentEntry(a config.AgentConfig, created int64) map[string]any {
 func buildSubAgentEntries(agents []config.AgentConfig) []map[string]any {
 	entries := make([]map[string]any, 0, len(agents))
 	for _, a := range agents {
-		entries = append(entries, map[string]any{
+		entry := map[string]any{
 			"id":          a.ID,
 			"type":        a.Type,
 			"name":        a.Name,
@@ -112,7 +115,11 @@ func buildSubAgentEntries(agents []config.AgentConfig) []map[string]any {
 			"model":       a.Model,
 			"provider":    a.Provider,
 			"tools":       a.Tools,
-		})
+		}
+		if a.SystemPrompt != "" {
+			entry["system_prompt"] = a.SystemPrompt
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }
