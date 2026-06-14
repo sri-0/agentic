@@ -10,8 +10,8 @@ import (
 type EmitArtifactArgs struct {
 	ID       string `json:"id,omitempty" desc:"Optional artifact id; reuse the same id to update an existing artifact. Auto-generated if omitted."`
 	Title    string `json:"title" desc:"Human-readable artifact title."`
-	Kind     string `json:"kind" desc:"One of: markdown, code, html, json."`
-	Content  string `json:"content" desc:"The artifact body."`
+	Kind     string `json:"kind" desc:"One of: markdown, code, html, json, csv. Use csv for spreadsheet/tabular data (first row = headers)."`
+	Content  string `json:"content" desc:"The artifact body. For csv, comma-separated rows with a header row."`
 	Language string `json:"language,omitempty" desc:"Optional source language when kind is code (e.g. python, go)."`
 }
 
@@ -33,7 +33,7 @@ type EmitArtifactResult struct {
 func NewEmitArtifactTool() (tool.Tool, error) {
 	return functiontool.New(functiontool.Config{
 		Name:        "emit_artifact",
-		Description: "Push an artifact (markdown, code, html, or json) to the UI sidepanel. Reuse the same id to update a previously emitted artifact.",
+		Description: "Push an artifact (markdown, code, html, json, or csv) to the UI sidepanel. Use csv for spreadsheet/tabular data. Reuse the same id to update a previously emitted artifact.",
 	}, emitArtifactHandler)
 }
 
