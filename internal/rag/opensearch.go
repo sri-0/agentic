@@ -183,7 +183,7 @@ func (c *Client) Search(query string, topK int, filters map[string]string) ([]Do
 	return hitsToDocuments(resp.Hits.Hits), nil
 }
 
-// GetByID retrieves a document by its OpenSearch document ID.
+// GetByID retrieves a document by its OpenSearch document ID (chunk _id).
 func (c *Client) GetByID(id string) (*Document, error) {
 	if c.os == nil {
 		return nil, fmt.Errorf("opensearch client not configured")
@@ -198,6 +198,34 @@ func (c *Client) GetByID(id string) (*Document, error) {
 	docs := hitsToDocuments([]opensearch.Hit{*hit})
 	if len(docs) == 0 {
 		return nil, fmt.Errorf("document %s not found", id)
+	}
+	return &docs[0], nil
+}
+
+// GetByDocID retrieves a document's metadata by its logical doc_id (as returned
+// by search results), reading the first matching chunk. Documents are stored one
+// chunk per OpenSearch _id with doc_id as a field, so a by-_id lookup of a doc_id
+// would 404 — query the field instead.
+func (c *Client) GetByDocID(docID string) (*Document, error) {
+	if c.os == nil {
+		return nil, fmt.Errorf("opensearch client not configured")
+	}
+
+	ctx := context.Background()
+	query := map[string]any{
+		"size": 1,
+		"query": map[string]any{
+			"term": map[string]any{"doc_id": docID},
+		},
+	}
+	resp, err := c.os.Search(ctx, opensearch.IndexEmbeddings, query)
+	if err != nil {
+		return nil, fmt.Errorf("opensearch get by doc_id: %w", err)
+	}
+
+	docs := hitsToDocuments(resp.Hits.Hits)
+	if len(docs) == 0 {
+		return nil, fmt.Errorf("document %s not found", docID)
 	}
 	return &docs[0], nil
 }

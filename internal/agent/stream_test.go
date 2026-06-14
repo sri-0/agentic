@@ -376,6 +376,123 @@ func TestStreamAgentRun_ToolCallAndResult(t *testing.T) {
 	}
 }
 
+// makeTodoWriteAgent yields a todowrite tool call + response carrying a todos
+// snapshot, then a short final text.
+func makeTodoWriteAgent(t *testing.T) adkagent.Agent {
+	t.Helper()
+	a, err := adkagent.New(adkagent.Config{
+		Name: "todo_agent",
+		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				callEvt := session.NewEvent(ctx.InvocationID())
+				callEvt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{{
+							FunctionCall: &genai.FunctionCall{
+								ID:   "call_todo",
+								Name: "todowrite",
+								Args: map[string]any{"todos": []any{
+									map[string]any{"content": "Research topic", "status": "in_progress", "priority": "high"},
+									map[string]any{"content": "Write report", "status": "pending"},
+								}},
+							},
+						}},
+					},
+				}
+				callEvt.Author = "todo_agent"
+				if !yield(callEvt, nil) {
+					return
+				}
+
+				respEvt := session.NewEvent(ctx.InvocationID())
+				respEvt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:   "call_todo",
+								Name: "todowrite",
+								Response: map[string]any{
+									"status": "written",
+									"todos": []any{
+										map[string]any{"content": "Research topic", "status": "in_progress", "priority": "high"},
+										map[string]any{"content": "Write report", "status": "pending"},
+									},
+								},
+							},
+						}},
+					},
+				}
+				respEvt.Author = "todo_agent"
+				if !yield(respEvt, nil) {
+					return
+				}
+
+				finalEvt := session.NewEvent(ctx.InvocationID())
+				finalEvt.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role:  genai.RoleModel,
+						Parts: []*genai.Part{{Text: "Done."}},
+					},
+					TurnComplete: true,
+				}
+				finalEvt.Author = "todo_agent"
+				yield(finalEvt, nil)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestStreamAgentRun_TodoWriteTaskList(t *testing.T) {
+	agent := makeTodoWriteAgent(t)
+	core := newTestCore(t, agent)
+
+	w := httptest.NewRecorder()
+	messages := []types.ChatMessage{{Role: "user", Content: "Plan the work"}}
+
+	StreamAgentRun(context.Background(), w, core, "thread-todo", messages, nil, zerolog.Nop())
+
+	events := parseSSEEvents(w.Body.String())
+
+	var taskListVal map[string]any
+	var hasToolResult bool
+	for _, evt := range events {
+		if _, ok := evt["tool_result"]; ok {
+			hasToolResult = true
+		}
+		agui, ok := evt["ag_ui"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if agui["name"] == "task_list" {
+			taskListVal, _ = agui["value"].(map[string]any)
+		}
+	}
+
+	if taskListVal == nil {
+		t.Fatal("expected a task_list CUSTOM event")
+	}
+	tasks, _ := taskListVal["tasks"].([]any)
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d: %v", len(tasks), tasks)
+	}
+	t0 := tasks[0].(map[string]any)
+	if t0["title"] != "Research topic" || t0["status"] != "in_progress" || t0["priority"] != "high" {
+		t.Errorf("unexpected task[0]: %v", t0)
+	}
+	if t0["id"] != "0" {
+		t.Errorf("expected task[0] id '0', got %v", t0["id"])
+	}
+	if !hasToolResult {
+		t.Error("expected a tool_result event so call/result pairing stays intact")
+	}
+}
+
 func TestStreamAgentRun_HITLInterrupt(t *testing.T) {
 	agent := makeHITLAgent(t)
 	core := newTestCore(t, agent)
@@ -639,6 +756,137 @@ func makeMultiAgentWorkflow(t *testing.T) adkagent.Agent {
 		t.Fatal(err)
 	}
 	return a
+}
+
+// makeSubAgentToolWorkflow has a sub-agent (analyst) make a tool call/result
+// plus reasoning, then the output agent (reporter) emits final text.
+func makeSubAgentToolWorkflow(t *testing.T) adkagent.Agent {
+	t.Helper()
+	a, err := adkagent.New(adkagent.Config{
+		Name: "workflow_root",
+		Run: func(ctx adkagent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				// Analyst reasoning (thought part)
+				rev := session.NewEvent(ctx.InvocationID())
+				rev.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role:  genai.RoleModel,
+						Parts: []*genai.Part{{Text: "Let me think.", Thought: true}},
+					},
+					Partial: true,
+				}
+				rev.Author = "analyst"
+				if !yield(rev, nil) {
+					return
+				}
+				// Analyst tool call
+				cev := session.NewEvent(ctx.InvocationID())
+				cev.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{{
+							FunctionCall: &genai.FunctionCall{
+								ID:   "sub_call_1",
+								Name: "web_search",
+								Args: map[string]any{"query": "x"},
+							},
+						}},
+					},
+				}
+				cev.Author = "analyst"
+				if !yield(cev, nil) {
+					return
+				}
+				// Analyst tool result
+				rrev := session.NewEvent(ctx.InvocationID())
+				rrev.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role: genai.RoleModel,
+						Parts: []*genai.Part{{
+							FunctionResponse: &genai.FunctionResponse{
+								ID:       "sub_call_1",
+								Name:     "web_search",
+								Response: map[string]any{"results": 3},
+							},
+						}},
+					},
+				}
+				rrev.Author = "analyst"
+				if !yield(rrev, nil) {
+					return
+				}
+				// Reporter (output) final text
+				fev := session.NewEvent(ctx.InvocationID())
+				fev.LLMResponse = model.LLMResponse{
+					Content: &genai.Content{
+						Role:  genai.RoleModel,
+						Parts: []*genai.Part{{Text: "Report."}},
+					},
+					TurnComplete: true,
+				}
+				fev.Author = "reporter"
+				yield(fev, nil)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestStreamAgentRun_SubAgentToolAttribution(t *testing.T) {
+	workflow := makeSubAgentToolWorkflow(t)
+	core := newTestCoreWithOutput(t, workflow, "reporter")
+
+	w := httptest.NewRecorder()
+	messages := []types.ChatMessage{{Role: "user", Content: "go"}}
+
+	StreamAgentRun(context.Background(), w, core, "thread-subtool", messages, nil, zerolog.Nop())
+
+	events := parseSSEEvents(w.Body.String())
+
+	var subToolCall, subToolResult, subReasoning bool
+	var openAIToolCall bool
+	for _, evt := range events {
+		if ae, ok := evt["agent_event"].(map[string]any); ok {
+			switch ae["type"] {
+			case "tool_call":
+				if ae["agent"] == "analyst" && ae["tool_name"] == "web_search" && ae["tool_call_id"] == "sub_call_1" {
+					subToolCall = true
+				}
+			case "tool_result":
+				if ae["agent"] == "analyst" && ae["tool_call_id"] == "sub_call_1" {
+					subToolResult = true
+				}
+			case "reasoning":
+				if ae["agent"] == "analyst" && ae["reasoning_content"] == "Let me think." {
+					subReasoning = true
+				}
+			}
+		}
+		if choices, ok := evt["choices"].([]any); ok && len(choices) > 0 {
+			choice := choices[0].(map[string]any)
+			if delta, ok := choice["delta"].(map[string]any); ok {
+				if tcs, ok := delta["tool_calls"].([]any); ok && len(tcs) > 0 {
+					openAIToolCall = true
+				}
+			}
+		}
+	}
+
+	if !subToolCall {
+		t.Error("expected attributed sub-agent tool_call agent_event")
+	}
+	if !subToolResult {
+		t.Error("expected attributed sub-agent tool_result agent_event")
+	}
+	if !subReasoning {
+		t.Error("expected sub-agent reasoning with reasoning_content")
+	}
+	if openAIToolCall {
+		t.Error("sub-agent tool call must NOT use the OpenAI tool_calls channel")
+	}
 }
 
 func TestStreamAgentRun_AgentEventRouting(t *testing.T) {

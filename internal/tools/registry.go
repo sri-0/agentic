@@ -22,6 +22,7 @@ func ToolNames() []string {
 		"confluence_search", "confluence_read_page",
 		"view_skill",
 		"emit_artifact",
+		"todowrite",
 		"search_memories", "add_memory", "update_memory", "delete_memory", "list_memories",
 	}
 }
@@ -73,6 +74,8 @@ func NewToolByName(name string, deps Deps) (tool.Tool, error) {
 		return NewViewSkillTool(deps.OSClient)
 	case "emit_artifact":
 		return NewEmitArtifactTool()
+	case "todowrite":
+		return NewTodoWriteTool()
 	case "search_memories", "add_memory", "update_memory", "delete_memory", "list_memories":
 		if t, ok := deps.MemoryTools[name]; ok {
 			return t, nil

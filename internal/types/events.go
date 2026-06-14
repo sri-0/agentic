@@ -4,10 +4,11 @@ package types
 // Emitted when agents start/finish, with step tracking for multi-agent workflows.
 type AgentProgressEvent struct {
 	AgentProgress struct {
-		Phase   string `json:"phase"`
-		Message string `json:"message"`
-		Agent   string `json:"agent,omitempty"`
-		Step    int    `json:"step,omitempty"`
+		Phase      string `json:"phase"`
+		Message    string `json:"message"`
+		Agent      string `json:"agent,omitempty"`
+		Step       int    `json:"step,omitempty"`
+		DurationMs int64  `json:"duration_ms,omitempty"`
 	} `json:"agent_progress"`
 	AGUI *AGUIEvent `json:"ag_ui,omitempty"`
 }
@@ -16,11 +17,14 @@ type AgentProgressEvent struct {
 // Used for intermediate agent text that should render separately from the final response.
 type AgentEventEvent struct {
 	AgentEvent struct {
-		Agent    string         `json:"agent"`
-		Type     string         `json:"type"` // text_delta, text_done, step_start, step_done
-		Content  string         `json:"content,omitempty"`
-		Step     int            `json:"step,omitempty"`
-		Metadata map[string]any `json:"metadata,omitempty"`
+		Agent            string         `json:"agent"`
+		Type             string         `json:"type"` // text_delta, reasoning_delta, text_done, tool_call, tool_result
+		Content          string         `json:"content,omitempty"`
+		ReasoningContent string         `json:"reasoning_content,omitempty"`
+		ToolName         string         `json:"tool_name,omitempty"`
+		ToolCallID       string         `json:"tool_call_id,omitempty"`
+		Step             int            `json:"step,omitempty"`
+		Metadata         map[string]any `json:"metadata,omitempty"`
 	} `json:"agent_event"`
 	AGUI *AGUIEvent `json:"ag_ui,omitempty"`
 }

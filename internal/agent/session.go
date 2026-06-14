@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/rs/zerolog"
@@ -51,17 +52,31 @@ func (m *SessionManager) GetOrCreate(ctx context.Context, threadID string, userI
 		return nil
 	}
 
+	// The known map is per-manager, but per-request model overrides rebuild the
+	// manager (and its map) while sharing the underlying session store. Consult
+	// the store directly so a follow-up turn reuses the existing session instead
+	// of trying to recreate it.
+	if _, err := m.service.Get(ctx, &session.GetRequest{
+		AppName:   m.appName,
+		UserID:    uid,
+		SessionID: threadID,
+	}); err == nil {
+		m.known[key] = true
+		return nil
+	}
+
 	_, err := m.service.Create(ctx, &session.CreateRequest{
 		AppName:   m.appName,
 		UserID:    uid,
 		SessionID: threadID,
 	})
-	if err != nil {
+	// Tolerate a race where the session appeared between Get and Create.
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
 		return err
 	}
 
 	m.known[key] = true
-	m.logger.Debug().Str("thread_id", threadID).Str("user_id", uid).Msg("created session")
+	m.logger.Debug().Str("thread_id", threadID).Str("user_id", uid).Msg("session ready")
 	return nil
 }
 
