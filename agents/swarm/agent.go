@@ -11,6 +11,7 @@ import (
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/agent/workflowagents/loopagent"
+	"google.golang.org/genai"
 )
 
 // NewAgent builds a swarm agent:
@@ -42,8 +43,11 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps)
 	var workerInfos []workerInfo
 	var workerAgentList []agent.Agent
 
-	for i := range agentCfg.SubAgents {
-		sub := &agentCfg.SubAgents[i]
+	resolved, err := cfg.Agents.ResolveSubAgents(agentCfg)
+	if err != nil {
+		return nil, err
+	}
+	for _, sub := range resolved {
 		w, err := shared.BuildLLMAgent(cfg, sub, deps)
 		if err != nil {
 			return nil, fmt.Errorf("worker %s: %w", sub.Name, err)
@@ -82,18 +86,13 @@ func NewAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps)
 
 You control a swarm of workers via a task board stored in session state.
 
-### To assign tasks
-Set the output_key "swarm:task_board" with a JSON array of tasks:
-[{"id": "t1", "worker": "worker_name", "input": "what to do", "status": "pending", "result": ""}]
+### Output format (REQUIRED)
+Always reply with a single JSON object of this exact shape — no prose, no markdown:
+{"tasks": [{"id": "t1", "worker": "worker_name", "input": "what to do", "status": "pending", "result": ""}]}
 
-IMPORTANT: Always include ALL existing tasks (done + new pending) in the array. Only change the status/result of completed tasks.
-
-### To add follow-up tasks
-After reviewing results, add new tasks with status "pending" while keeping completed tasks.
-
-### To finish
-When you have enough information, set output_key "swarm:synthesis" to your final answer.
-The synthesis should be a complete response to the user's original question.
+- "worker" MUST be one of the available workers above.
+- Always include ALL existing tasks (done + new pending). Only change status/result of completed tasks; never set a completed task back to "pending".
+- The final deliverable is produced by adding a task assigned to the writer worker (it reads earlier results from the board). Do NOT write the answer yourself.
 
 ### Current state
 Task board: {swarm:task_board}
@@ -105,6 +104,11 @@ Iteration: {swarm:iteration}`
 		Model:       m,
 		Instruction: coordinatorPrompt,
 		OutputKey:   KeyTaskBoard,
+		// Force a clean JSON object (no markdown fences / prose). Parsed
+		// tolerantly downstream (parseTaskBoard) for models that wrap it.
+		GenerateContentConfig: &genai.GenerateContentConfig{
+			ResponseMIMEType: "application/json",
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("coordinator: %w", err)
@@ -114,7 +118,7 @@ Iteration: {swarm:iteration}`
 	dispatch, err := agent.New(agent.Config{
 		Name:      "dispatch",
 		SubAgents: workerAgentList,
-		Run:       dispatchRun(workerAgents, maxParallel, logger),
+		Run:       dispatchRun(workerAgents, maxParallel, agentCfg.OutputAgent, logger),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: %w", err)

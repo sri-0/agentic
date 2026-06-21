@@ -18,40 +18,42 @@ type AgentConfig struct {
 	Description  string        `yaml:"description"`
 	Model        string        `yaml:"model"`
 	Provider     string        `yaml:"provider"`
-	SystemPrompt string        `yaml:"system_prompt"`
-	Tools        []string      `yaml:"tools"`
-	SubAgents    []AgentConfig `yaml:"sub_agents,omitempty"`
-	OutputKey          string        `yaml:"output_key,omitempty"`
-	OutputAgent        string        `yaml:"output_agent,omitempty"`
-	Keywords           []string      `yaml:"keywords,omitempty"`
-	MaxIterations      int           `yaml:"max_iterations,omitempty"`
-	MaxParallelWorkers int           `yaml:"max_parallel_workers,omitempty"`
+	SystemPrompt string   `yaml:"system_prompt"`
+	Tools        []string `yaml:"tools"`
+	// SubAgents is a list of agent IDs (roster references). Resolve via
+	// AgentsConfig.ResolveSubAgents / ResolveSubAgentByName.
+	SubAgents          []string `yaml:"sub_agents,omitempty"`
+	Internal           bool     `yaml:"internal,omitempty"`
+	OutputKey          string   `yaml:"output_key,omitempty"`
+	OutputAgent        string   `yaml:"output_agent,omitempty"`
+	Keywords           []string `yaml:"keywords,omitempty"`
+	MaxIterations      int      `yaml:"max_iterations,omitempty"`
+	MaxParallelWorkers int      `yaml:"max_parallel_workers,omitempty"`
+
+	// Per-request model override, set by WithModelOverride and propagated to
+	// every resolved sub-agent so the user-selected model is used across the
+	// whole tree (root + sub-agents). Not serialized.
+	overrideModel    string
+	overrideProvider string
 }
 
 // WithModelOverride returns a deep copy of c with Model and Provider set to the
-// given values on the root agent AND on every sub-agent recursively (any depth).
-// The receiver is not mutated; all slices are copied so the original config is
-// untouched.
+// given values on the root agent, and records the override so it propagates to
+// every resolved sub-agent (see ResolveSubAgents). The receiver is not mutated.
 func (c *AgentConfig) WithModelOverride(modelID, provider string) *AgentConfig {
 	if c == nil {
 		return nil
 	}
 	cp := c.clone()
-	cp.applyModelOverride(modelID, provider)
+	cp.Model = modelID
+	cp.Provider = provider
+	cp.overrideModel = modelID
+	cp.overrideProvider = provider
 	return cp
 }
 
-// applyModelOverride sets Model/Provider on this config and all sub-agents.
-func (c *AgentConfig) applyModelOverride(modelID, provider string) {
-	c.Model = modelID
-	c.Provider = provider
-	for i := range c.SubAgents {
-		c.SubAgents[i].applyModelOverride(modelID, provider)
-	}
-}
-
-// clone returns a deep copy of the AgentConfig, copying all slices and
-// recursively cloning sub-agents so the original is never aliased.
+// clone returns a deep copy of the AgentConfig, copying all slices so the
+// original is never aliased.
 func (c *AgentConfig) clone() *AgentConfig {
 	if c == nil {
 		return nil
@@ -59,25 +61,8 @@ func (c *AgentConfig) clone() *AgentConfig {
 	cp := *c
 	cp.Tools = append([]string(nil), c.Tools...)
 	cp.Keywords = append([]string(nil), c.Keywords...)
-	if len(c.SubAgents) > 0 {
-		cp.SubAgents = make([]AgentConfig, len(c.SubAgents))
-		for i := range c.SubAgents {
-			cp.SubAgents[i] = *c.SubAgents[i].clone()
-		}
-	} else {
-		cp.SubAgents = nil
-	}
+	cp.SubAgents = append([]string(nil), c.SubAgents...)
 	return &cp
-}
-
-// FindSubAgent returns the sub-agent config with the given name, or nil.
-func (c *AgentConfig) FindSubAgent(name string) *AgentConfig {
-	for i := range c.SubAgents {
-		if c.SubAgents[i].Name == name {
-			return &c.SubAgents[i]
-		}
-	}
-	return nil
 }
 
 func LoadAgents(path string) (*AgentsConfig, error) {
@@ -100,6 +85,46 @@ func (c *AgentsConfig) FindAgent(id string) *AgentConfig {
 		}
 	}
 	return nil
+}
+
+// ResolveSubAgents resolves each id in parent.SubAgents against the roster
+// (via FindAgent) and returns the resolved configs (including internal ones).
+// It errors if any referenced id is missing.
+func (c *AgentsConfig) ResolveSubAgents(parent *AgentConfig) ([]*AgentConfig, error) {
+	resolved := make([]*AgentConfig, 0, len(parent.SubAgents))
+	for _, id := range parent.SubAgents {
+		sub := c.FindAgent(id)
+		if sub == nil {
+			return nil, fmt.Errorf("sub_agent %q referenced by %q not found in roster", id, parent.ID)
+		}
+		// Propagate a per-request model override to every sub-agent so the
+		// user-selected model is used across the whole tree.
+		if parent.overrideModel != "" {
+			oc := sub.clone()
+			oc.Model = parent.overrideModel
+			oc.Provider = parent.overrideProvider
+			oc.overrideModel = parent.overrideModel
+			oc.overrideProvider = parent.overrideProvider
+			sub = oc
+		}
+		resolved = append(resolved, sub)
+	}
+	return resolved, nil
+}
+
+// ResolveSubAgentByName resolves parent.SubAgents against the roster and returns
+// the one whose Name == name OR ID == name. It errors if no match is found.
+func (c *AgentsConfig) ResolveSubAgentByName(parent *AgentConfig, name string) (*AgentConfig, error) {
+	resolved, err := c.ResolveSubAgents(parent)
+	if err != nil {
+		return nil, err
+	}
+	for _, sub := range resolved {
+		if sub.Name == name || sub.ID == name {
+			return sub, nil
+		}
+	}
+	return nil, fmt.Errorf("sub_agent %q not found in sub_agents of %q", name, parent.ID)
 }
 
 // AgentIDs returns all agent IDs.

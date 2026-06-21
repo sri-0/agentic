@@ -37,7 +37,7 @@ func main() {
 			continue
 		}
 
-		agent.ConfigureCore(core, agentCfg)
+		agent.ConfigureCore(core, cfg.Agents, agentCfg)
 
 		registry.Register(id, core)
 		logger.Info().Str("agent", id).Msg("agent registered")
@@ -58,7 +58,7 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		agent.ConfigureCore(core, oc)
+		agent.ConfigureCore(core, cfg.Agents, oc)
 		return core, nil
 	}
 

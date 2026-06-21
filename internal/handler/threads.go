@@ -43,8 +43,11 @@ func ThreadsList(osClient *opensearch.Client, logger zerolog.Logger) http.Handle
 
 		resp, err := osClient.Search(r.Context(), opensearch.IndexThreads, query)
 		if err != nil {
-			logger.Error().Err(err).Msg("threads list failed")
-			http.Error(w, `{"error":"failed to list threads"}`, http.StatusInternalServerError)
+			// Degrade gracefully when the store is unreachable (local dev without
+			// OpenSearch): return an empty thread list so the sidebar still loads.
+			logger.Warn().Err(err).Msg("threads list failed — returning empty list")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]types.Thread{})
 			return
 		}
 
@@ -232,8 +235,12 @@ func ThreadsMessagesList(osClient *opensearch.Client, logger zerolog.Logger) htt
 
 		resp, err := osClient.Search(r.Context(), opensearch.IndexMessages, query)
 		if err != nil {
-			logger.Error().Err(err).Str("thread_id", threadID).Msg("messages list failed")
-			http.Error(w, `{"error":"failed to list messages"}`, http.StatusInternalServerError)
+			// Degrade gracefully: when the store is unreachable (e.g. OpenSearch
+			// down in local dev), return an empty history with 200 so the chat UI
+			// still mounts instead of erroring on load.
+			logger.Warn().Err(err).Str("thread_id", threadID).Msg("messages list failed — returning empty history")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]types.ThreadMessage{})
 			return
 		}
 

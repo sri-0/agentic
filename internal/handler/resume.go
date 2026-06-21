@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"agentic/internal/agent"
+	"agentic/internal/stream"
 	"agentic/internal/types"
 
 	"github.com/rs/zerolog"
@@ -58,6 +59,7 @@ func Resume(registry *agent.Registry, logger zerolog.Logger) http.HandlerFunc {
 		_ = core.Interrupts.Clear(req.ThreadID)
 
 		// Resume via the runner with the confirmation response
-		agent.StreamResumeRun(r.Context(), w, core, req.ThreadID, pending, approved, logger)
+		format := stream.ParseFormat(r.URL.Query().Get("format"))
+		agent.StreamResumeRunFormat(r.Context(), w, format, core, req.ThreadID, pending, approved, logger)
 	}
 }

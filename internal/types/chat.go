@@ -2,20 +2,23 @@ package types
 
 import (
 	"encoding/json"
+	"strings"
 
 	openai "github.com/openai/openai-go/v3"
 )
 
 // ChatCompletionRequest for parsing the fields we care about.
 type ChatCompletionRequest struct {
-	Model        string        `json:"model" jsonschema:"required" jsonschema_description:"Model ID to use"`
-	Messages     []ChatMessage `json:"messages" jsonschema:"required" jsonschema_description:"Conversation messages"`
-	Stream       *bool         `json:"stream,omitempty" jsonschema_description:"Stream response via SSE (default: true)"`
-	ThreadID     string        `json:"thread_id,omitempty" jsonschema_description:"Thread ID for conversation persistence"`
-	UseRAG       bool          `json:"use_rag,omitempty" jsonschema_description:"Augment with knowledge base context before LLM call"`
-	PromptID     string        `json:"prompt_id,omitempty" jsonschema_description:"Prompt template ID to apply"`
-	AgentID      string        `json:"agent_id,omitempty" jsonschema_description:"Agent ID to route this request to"`
-	AgentIDCamel string        `json:"agentId,omitempty" jsonschema:"-"`
+	Model           string        `json:"model" jsonschema:"required" jsonschema_description:"Model ID to use"`
+	Messages        []ChatMessage `json:"messages" jsonschema:"required" jsonschema_description:"Conversation messages"`
+	Stream          *bool         `json:"stream,omitempty" jsonschema_description:"Stream response via SSE (default: true)"`
+	ThreadID        string        `json:"thread_id,omitempty" jsonschema_description:"Thread ID for conversation persistence"`
+	UseRAG          bool          `json:"use_rag,omitempty" jsonschema_description:"Augment with knowledge base context before LLM call"`
+	PromptID        string        `json:"prompt_id,omitempty" jsonschema_description:"Prompt template ID to apply"`
+	AgentID         string        `json:"agent_id,omitempty" jsonschema_description:"Agent ID to route this request to"`
+	AgentIDCamel    string        `json:"agentId,omitempty" jsonschema:"-"`
+	Temporary       bool          `json:"temporary,omitempty" jsonschema_description:"When true, do not persist the thread"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty" jsonschema_description:"Reasoning effort hint (off/low/medium/high)"`
 }
 
 // RouteAgentID returns the explicit agent selector, accepting both snake_case
@@ -31,6 +34,45 @@ func (r ChatCompletionRequest) RouteAgentID() string {
 type ChatMessage struct {
 	Role    string `json:"role" jsonschema:"required" jsonschema_description:"Message role: system, user, assistant, tool"`
 	Content string `json:"content" jsonschema:"required" jsonschema_description:"Message content"`
+}
+
+// UnmarshalJSON accepts both the OpenAI shape ({role, content:string}) and the
+// Vercel AI SDK UIMessage shape ({role, parts:[{type:"text", text}]}). For the
+// latter, the text parts are concatenated into Content. Non-text parts
+// (reasoning, tool, file, data-*) are ignored — only the user's text reaches the
+// agent loop today.
+func (m *ChatMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+		Parts   []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Role = raw.Role
+
+	// OpenAI content as a plain string wins when present.
+	if len(raw.Content) > 0 {
+		var s string
+		if err := json.Unmarshal(raw.Content, &s); err == nil && s != "" {
+			m.Content = s
+			return nil
+		}
+	}
+
+	// AI SDK UIMessage: concatenate text parts.
+	var b strings.Builder
+	for _, p := range raw.Parts {
+		if p.Type == "text" && p.Text != "" {
+			b.WriteString(p.Text)
+		}
+	}
+	m.Content = b.String()
+	return nil
 }
 
 type ChatCompletionResponse struct {

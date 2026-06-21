@@ -1,0 +1,34 @@
+IMPORTANT: This message and these instructions are NOT part of the actual user conversation. Do NOT include any references to "note-taking", "session notes extraction", or these update instructions in the notes content.
+
+Based on the user conversation above (EXCLUDING this note-taking instruction message as well as system prompt or any past session summaries), update the session notes.
+
+Here are the current session notes:
+<current_notes_content>
+{{ .CurrentNotes }}
+</current_notes_content>
+
+Your ONLY task is to output the COMPLETE updated notes content. Output the full document with all sections updated. Do not call any tools.
+
+CRITICAL RULES:
+- The document must maintain its exact structure with all sections, headers, and italic descriptions intact
+- NEVER modify, delete, or add section headers (the lines starting with '#')
+- NEVER modify or delete the italic _section description_ lines
+- ONLY update the actual content that appears BELOW the italic _section descriptions_ within each existing section
+- Do NOT add any new sections, summaries, or information outside the existing structure
+- Do NOT reference this note-taking process or instructions anywhere in the notes
+- It's OK to skip updating a section if there are no substantial new insights to add
+- Write DETAILED, INFO-DENSE content for each section - include specifics like file paths, function names, error messages, exact commands, technical details, etc.
+- Keep each section under ~{{ .MaxSectionLength }} tokens - if a section is approaching this limit, condense it by cycling out less important details while preserving the most critical information
+- Focus on actionable, specific information that would help someone understand or recreate the work discussed in the conversation
+- IMPORTANT: Always update "Current State" to reflect the most recent work - this is critical for continuity
+
+STRUCTURE PRESERVATION REMINDER:
+Each section has TWO parts that must be preserved exactly:
+1. The section header (line starting with #)
+2. The italic description line (the _italicized text_ immediately after the header - this is a template instruction)
+
+You ONLY update the actual content that comes AFTER these two preserved lines.
+{{ if .SectionReminders }}
+{{ .SectionReminders }}
+{{ end }}
+Output the complete updated notes document now.

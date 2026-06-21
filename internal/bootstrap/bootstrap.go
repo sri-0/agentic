@@ -205,6 +205,13 @@ func Init(ctx context.Context) (*Result, error) {
 	for i := range agentsCfg.Agents {
 		ac := &agentsCfg.Agents[i]
 
+		// Internal agents are roster entries used only as resolved sub-agents.
+		// They remain in cfg.Agents.Agents (so ResolveSubAgents finds them) but
+		// are NOT built/registered as selectable top-level agents.
+		if ac.Internal {
+			continue
+		}
+
 		a, err := BuildAgentTree(cfg, ac, deps)
 		if err != nil {
 			logger.Error().Err(err).Str("agent", ac.ID).Str("type", ac.Type).Msg("failed to build agent, skipping")

@@ -44,19 +44,10 @@ func checkTasksRun(
 				return
 			}
 
-			// Try to parse coordinator output as task board JSON
-			// Strip markdown code fences if present
-			cleaned := strings.TrimSpace(boardRaw)
-			if strings.HasPrefix(cleaned, "```") {
-				// Remove ```json ... ``` wrapping
-				lines := strings.Split(cleaned, "\n")
-				if len(lines) > 2 {
-					cleaned = strings.Join(lines[1:len(lines)-1], "\n")
-				}
-			}
-
-			var tasks []Task
-			isTaskBoard := json.Unmarshal([]byte(cleaned), &tasks) == nil && len(tasks) > 0
+			// Parse the coordinator's output as a task board (tolerant of
+			// markdown fences / object-wrapped boards).
+			tasks, perr := parseTaskBoard(boardRaw)
+			isTaskBoard := perr == nil && len(tasks) > 0
 
 			if !isTaskBoard {
 				// Coordinator output is not a task list — it's the final synthesis
@@ -88,8 +79,26 @@ func checkTasksRun(
 			}
 
 			if !hasPending {
-				// All done, but coordinator didn't synthesize yet — let it loop
-				logger.Info().Int("tasks", len(tasks)).Msg("no pending tasks, coordinator will review next iteration")
+				// Every task is settled (done/failed) and nothing is left to
+				// dispatch. The output agent's result has already streamed to the
+				// main thread, so FINISH here instead of re-running the
+				// coordinator — which otherwise re-emits the same board and churns
+				// to max_iterations.
+				logger.Info().Int("tasks", len(tasks)).Msg("all tasks settled, escalating to finish")
+				summary := buildResultsSummary(string(normalizedBoard))
+				evt := session.NewEvent(ctx.InvocationID())
+				evt.Author = "check_tasks"
+				evt.LLMResponse = model.LLMResponse{
+					Content: genai.NewContentFromText(summary, genai.RoleModel),
+				}
+				evt.Actions.StateDelta = map[string]any{
+					KeySynthesis: summary,
+					KeyIteration: iteration,
+					KeyTaskBoard: string(normalizedBoard),
+				}
+				evt.Actions.Escalate = true
+				yield(evt, nil)
+				return
 			}
 
 			// Check max iterations
@@ -102,8 +111,8 @@ func checkTasksRun(
 					Content: genai.NewContentFromText(summary, genai.RoleModel),
 				}
 				evt.Actions.StateDelta = map[string]any{
-					KeySynthesis:  summary,
-					KeyIteration:  iteration,
+					KeySynthesis: summary,
+					KeyIteration: iteration,
 					KeyTaskBoard: string(normalizedBoard),
 				}
 				evt.Actions.Escalate = true

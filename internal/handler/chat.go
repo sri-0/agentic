@@ -11,6 +11,8 @@ import (
 	"agentic/internal/config"
 	"agentic/internal/proxy"
 	"agentic/internal/rag"
+	"agentic/internal/stream"
+	"agentic/internal/stream/aisdk"
 	"agentic/internal/types"
 	"agentic/pkg/db/opensearch"
 
@@ -82,17 +84,26 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 				resolvedModel = cfg.Models.ResolveModelID(req.Model)
 			}
 
-			// Re-marshal if model ID changed or RAG augmented the messages
-			if resolvedModel != req.Model || req.UseRAG {
-				req.Model = resolvedModel
-				req.Messages = messages
-				if augmented, err := json.Marshal(req); err == nil {
-					rawBody = augmented
-				}
+			// Always re-marshal: the client may send AI SDK UIMessages (parts),
+			// but upstream needs {role,content}. req.Messages is the parsed/
+			// template-applied/RAG-augmented list. Force streaming since the UI
+			// transport doesn't set it.
+			req.Model = resolvedModel
+			req.Messages = messages
+			streamTrue := true
+			req.Stream = &streamTrue
+			body, err := json.Marshal(req)
+			if err != nil {
+				body = rawBody
 			}
 
-			logger.Info().Str("model", resolvedModel).Str("upstream", baseURL).Bool("use_rag", req.UseRAG).Msg("chat: proxying to upstream")
-			proxy.ForwardTo(w, baseURL, apiKey, "/chat/completions", rawBody, client)
+			format := stream.ParseFormat(r.URL.Query().Get("format"))
+			logger.Info().Str("model", resolvedModel).Str("upstream", baseURL).Str("format", string(format)).Bool("use_rag", req.UseRAG).Msg("chat: proxying to upstream")
+			if format == stream.FormatAISDK {
+				proxyAISDK(w, baseURL, apiKey, body, client, resolvedModel, logger)
+			} else {
+				proxy.ForwardTo(w, baseURL, apiKey, "/chat/completions", body, client)
+			}
 			return
 		}
 
@@ -128,7 +139,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 		}
 
 		threadID := req.ThreadID
-		persistThread := threadID != ""
+		persistThread := threadID != "" && !req.Temporary
 		if threadID == "" {
 			threadID = fmt.Sprintf("anon-%s", uuid.New().String()[:12])
 		}
@@ -153,7 +164,52 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 		if !isStream {
 			agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
 		} else {
-			agent.StreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
+			format := stream.ParseFormat(r.URL.Query().Get("format"))
+			agent.StreamAgentRunFormat(r.Context(), w, format, core, threadID, messages, saver, logger)
 		}
 	}
+}
+
+// proxyAISDK forwards a plain-model (no-agent) request to the upstream provider
+// and translates its OpenAI SSE into the AI SDK v6 UI Message Stream, so a direct
+// model chat renders the same as an agent run. Errors are surfaced as assistant
+// text so the UI never renders blank.
+func proxyAISDK(w http.ResponseWriter, baseURL, apiKey string, body []byte, client *http.Client, model string, logger zerolog.Logger) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("x-vercel-ai-ui-message-stream", "v1")
+
+	enc := aisdk.New(stream.NewSSESink(w), model, "")
+
+	resp, err := proxy.OpenUpstream(baseURL, apiKey, "/chat/completions", body, client)
+	if err != nil {
+		enc.RunStarted()
+		enc.Text("Upstream request failed: " + err.Error())
+		enc.RunFinished(stream.Usage{})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		logger.Warn().Int("status", resp.StatusCode).Str("body", string(raw)).Msg("chat: upstream error (aisdk proxy)")
+		enc.RunStarted()
+		enc.Text(upstreamErrorText(raw))
+		enc.RunFinished(stream.Usage{})
+		return
+	}
+	stream.PumpOpenAI(resp.Body, enc, model)
+}
+
+func upstreamErrorText(raw []byte) string {
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &e) == nil && e.Error.Message != "" {
+		return "Error: " + e.Error.Message
+	}
+	return "Error: the model request failed."
 }

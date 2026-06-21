@@ -8,6 +8,24 @@ import (
 	"strings"
 )
 
+// OpenUpstream performs the upstream POST and returns the live response so the
+// caller can transform the stream (e.g. OpenAI SSE → AI SDK v6). The caller owns
+// closing resp.Body. Returns the response even on non-2xx so the caller can
+// surface the error body.
+func OpenUpstream(baseURL, apiKey, path string, rawBody []byte, client *http.Client) (*http.Response, error) {
+	url := strings.TrimRight(baseURL, "/") + path
+	req, err := http.NewRequest("POST", url, bytes.NewReader(rawBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return client.Do(req)
+}
+
 // ForwardTo proxies a raw request body to baseURL+path.
 // For SSE streams, it flushes each chunk as it arrives from upstream.
 // If client is nil, http.DefaultClient is used.

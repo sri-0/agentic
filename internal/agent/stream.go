@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"agentic/internal/chat"
 	"agentic/internal/hitl"
-	"agentic/internal/sse"
+	"agentic/internal/stream"
+	"agentic/internal/stream/aisdk"
+	"agentic/internal/stream/openai"
+	"agentic/internal/tasks"
 	"agentic/internal/types"
 
 	"github.com/google/uuid"
@@ -19,27 +23,65 @@ import (
 	"google.golang.org/genai"
 )
 
-// StreamAgentRun uses the ADK runner with StreamingModeSSE to execute the
-// agent loop. If saver is non-nil, user and assistant messages are persisted.
-func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+// artifactToolName is the built-in tool agents call to push an artifact to the UI.
+const artifactToolName = "emit_artifact"
+
+// todoToolName is the built-in tool agents call to surface a structured todo
+// list (task_list snapshot) to the UI.
+const todoToolName = "todowrite"
+
+// usageTotals holds token counts captured from the ADK run.
+type usageTotals struct {
+	prompt     int
+	completion int
+	total      int
+}
+
+// setStreamHeaders writes the SSE response headers (and the AI-SDK marker when
+// the aisdk format is selected).
+func setStreamHeaders(w http.ResponseWriter, format stream.Format) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	if format == stream.FormatAISDK {
+		w.Header().Set("x-vercel-ai-ui-message-stream", "v1")
+	}
+}
+
+// newEncoder builds the wire-format encoder for the request. The OpenAI encoder
+// keeps the agent id in the chunk `model` field (legacy behavior); the AI-SDK
+// encoder stamps model + agent id onto message-metadata.
+func newEncoder(format stream.Format, sink stream.Sink, requestID string, core *Core, threadID string) stream.Encoder {
+	if format == stream.FormatAISDK {
+		return aisdk.New(sink, core.ModelID, core.AgentID)
+	}
+	return openai.New(sink, requestID, core.AgentID, threadID)
+}
+
+// StreamAgentRun runs the agent loop with the default (OpenAI) wire format.
+func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+	StreamAgentRunFormat(ctx, w, stream.FormatOpenAI, core, threadID, messages, saver, logger)
+}
+
+// StreamAgentRunFormat runs the agent loop, emitting the chosen wire format.
+func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format stream.Format, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+	setStreamHeaders(w, format)
 
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
-	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
+	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID)
 
-	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Int("messages", len(messages)).Msg("stream: request received")
+	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Str("format", string(format)).Int("messages", len(messages)).Msg("stream: request received")
 
-	writeProgress(w, threadID, requestID, "planning", "Analyzing...")
+	enc.RunStarted()
+	enc.Metadata(core.ModelID, core.AgentID, 0)
+	enc.Progress("planning", "Analyzing...")
 
 	// Ensure session exists
 	if err := core.SessionManager.GetOrCreate(ctx, threadID); err != nil {
 		logger.Error().Err(err).Str("thread_id", threadID).Msg("stream: session create failed")
-		writeProgress(w, threadID, requestID, "error", "Failed to create session")
-		sse.WriteSSE(w, cb.Finish("stop"))
-		sse.WriteDone(w)
+		enc.Progress("error", "Failed to create session")
+		enc.RunFinished(stream.Usage{})
 		return
 	}
 	logger.Info().Str("thread_id", threadID).Msg("stream: session ready")
@@ -53,19 +95,21 @@ func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, thre
 		saver.SaveUserMessage(ctx, threadID, lastMsg.Content)
 	}
 
-	streamEvents(ctx, w, core, threadID, requestID, userContent, cb, saver, logger)
+	streamEvents(ctx, enc, core, threadID, requestID, userContent, saver, logger)
 }
 
-// StreamResumeRun handles the resume flow after HITL approval/denial.
-// It sends the confirmation FunctionResponse back through the runner.
+// StreamResumeRun handles the resume flow after HITL approval/denial (OpenAI format).
 func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, pending *hitl.PendingInterrupt, approved bool, logger zerolog.Logger) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
+	StreamResumeRunFormat(ctx, w, stream.FormatOpenAI, core, threadID, pending, approved, logger)
+}
+
+// StreamResumeRunFormat handles the resume flow, emitting the chosen wire format.
+// It sends the confirmation FunctionResponse back through the runner.
+func StreamResumeRunFormat(ctx context.Context, w http.ResponseWriter, format stream.Format, core *Core, threadID string, pending *hitl.PendingInterrupt, approved bool, logger zerolog.Logger) {
+	setStreamHeaders(w, format)
 
 	requestID := fmt.Sprintf("chatcmpl-resume-%s", uuid.New().String()[:12])
-	cb := sse.NewChunkBuilder(requestID, core.AgentID, threadID)
+	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID)
 
 	action := "denied"
 	if approved {
@@ -79,11 +123,13 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 		Str("action", action).
 		Msg("resume: continuing after HITL")
 
-	// Emit synthetic tool call delta so the frontend sees the tool_call
-	// before the tool_result (required by Vercel AI SDK data stream protocol).
+	enc.RunStarted()
+	enc.Metadata(core.ModelID, core.AgentID, 0)
+
+	// Re-surface the tool call so the frontend sees the tool_call before its
+	// result (required by the stream protocol).
 	argsJSON, _ := json.Marshal(pending.Details)
-	sse.WriteSSE(w, cb.ToolCallDelta(0, pending.ToolCallID, pending.ToolName, string(argsJSON)))
-	sse.WriteSSE(w, cb.Finish("tool_calls"))
+	enc.ToolCall(0, pending.ToolCallID, pending.ToolName, string(argsJSON))
 
 	// Build the confirmation FunctionResponse per ADK's expected format
 	funcResponse := &genai.FunctionResponse{
@@ -99,17 +145,23 @@ func StreamResumeRun(ctx context.Context, w http.ResponseWriter, core *Core, thr
 		Parts: []*genai.Part{{FunctionResponse: funcResponse}},
 	}
 
-	streamEvents(ctx, w, core, threadID, requestID, confirmContent, cb, nil, logger)
+	streamEvents(ctx, enc, core, threadID, requestID, confirmContent, nil, logger)
 }
 
-// streamEvents is the shared event processing loop for both new turns and resumes.
-func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, threadID, runID string, content *genai.Content, cb *sse.ChunkBuilder, saver *chat.MessageSaver, logger zerolog.Logger) {
+// streamEvents is the shared event processing loop for both new turns and
+// resumes. It interprets adk-go events and drives the wire-format Encoder; it is
+// format-agnostic (the encoder owns the byte format). RunStarted / initial
+// metadata are emitted by the callers, so the AI-SDK stream opens with the
+// required `start` chunk even on the resume path.
+func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID, runID string, content *genai.Content, saver *chat.MessageSaver, logger zerolog.Logger) {
 	toolCallIdx := int64(0)
 	hadPartialText := false
 	var outputText string // accumulates output agent text for persistence
 	step := 0
 	lastAuthor := ""
-	var lastUsage usageTotals // most recent token usage seen (final wins)
+	lastBoardSig := ""              // last emitted task-board signature (de-dup)
+	taskSeen := map[string]string{} // per-task high-water status (monotonic board)
+	var lastUsage usageTotals       // most recent token usage seen (final wins)
 
 	// Agent transition tracking.
 	//
@@ -120,14 +172,22 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 	//
 	// When a NEW agent appears that isn't a returning parallel peer, we close all
 	// agents in the previous group and start a new group.
-	activeGroup := make(map[string]bool)        // agents in current parallel group
-	allSeen := make(map[string]bool)            // all agents ever seen (for loop detection)
-	agentStart := make(map[string]time.Time)    // per-agent start time (for duration)
+	activeGroup := make(map[string]bool)     // agents in current parallel group
+	allSeen := make(map[string]bool)         // all agents ever seen (for loop detection)
+	agentStart := make(map[string]time.Time) // per-agent start time (for duration)
 
 	streamLog := logger.With().Str("thread_id", threadID).Str("agent_id", core.AgentID).Logger()
 
+	// Worker instances are re-authored "worker#taskID" for unique per-task
+	// identity; the output-agent check compares the base worker name.
+	baseAgent := func(author string) string {
+		if i := strings.IndexByte(author, '#'); i >= 0 {
+			return author[:i]
+		}
+		return author
+	}
 	isOutputAgent := func(author string) bool {
-		return core.OutputAgent == "" || author == core.OutputAgent
+		return core.OutputAgent == "" || baseAgent(author) == core.OutputAgent
 	}
 
 	closeGroup := func() {
@@ -136,12 +196,10 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			if t, ok := agentStart[a]; ok {
 				durMs = time.Since(t).Milliseconds()
 			}
-			writeAgentDone(w, threadID, runID, a, step, durMs)
+			enc.AgentDone(a, step, durMs)
 			streamLog.Info().Str("sub_agent", a).Int("step", step).Int64("duration_ms", durMs).Msg("stream: agent done")
 			// Remove from allSeen so the same agents can re-form a group
 			// in the next loop iteration (e.g. document_analyst on doc 2).
-			// The triggering agent (the one that caused the close) stays in
-			// allSeen since it's added after this function returns.
 			delete(allSeen, a)
 			delete(agentStart, a)
 		}
@@ -162,14 +220,10 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		// Determine if we should close the current group before starting this agent.
 		shouldClose := false
 		if allSeen[author] {
-			// Agent seen before (e.g. document_fetcher on doc 2) — new phase
 			shouldClose = true
 		} else if len(activeGroup) == 1 {
-			// Single active agent → sequential step, close it
 			shouldClose = true
 		}
-		// If activeGroup has multiple agents and this is a new agent, it's likely
-		// another parallel peer joining — don't close.
 
 		if shouldClose {
 			closeGroup()
@@ -179,7 +233,7 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		activeGroup[author] = true
 		agentStart[author] = time.Now()
 		step++
-		writeAgentProgress(w, threadID, runID, "agent_start", fmt.Sprintf("Running %s...", author), author, step)
+		enc.AgentStart(author, step)
 		streamLog.Info().Str("sub_agent", author).Int("step", step).Msg("stream: agent start")
 	}
 
@@ -187,22 +241,29 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 	eventCount := 0
 	toolCallCount := 0
 	streamLog.Info().Msg("stream: runner started")
-	writeAGUI(w, &types.AGUIEvent{Type: "RUN_STARTED", Timestamp: time.Now().UnixMilli(), ThreadID: threadID, RunID: runID})
 
 	for event, err := range core.Runner.Run(ctx, "default", threadID, content, adkagent.RunConfig{
 		StreamingMode: adkagent.StreamingModeSSE,
 	}) {
 		if err != nil {
 			streamLog.Error().Err(err).Dur("elapsed", time.Since(startTime)).Msg("stream: runner error")
-			// Attribute the failure to the active sub-agent (lastAuthor) so it
-			// lands in that agent's card. Fall back to a run-level error if no
-			// agent has run yet.
 			if lastAuthor != "" {
-				writeAgentProgress(w, threadID, runID, "error", fmt.Sprintf("Error: %v", err), lastAuthor, step)
+				enc.AgentProgress("error", fmt.Sprintf("Error: %v", err), lastAuthor, step)
 			} else {
-				writeProgress(w, threadID, runID, "error", fmt.Sprintf("Error: %v", err))
+				enc.Progress("error", fmt.Sprintf("Error: %v", err))
 			}
 			break
+		}
+
+		// Task board updates can ride on content-less state-delta events, so
+		// detect them BEFORE the Content==nil guard. De-dup by signature since
+		// the coordinator re-writes the whole board each loop iteration.
+		if board, ok := tasks.BoardFromStateDelta(event.Actions.StateDelta); ok {
+			tasks.Clamp(taskSeen, board) // never regress a settled task in the UI
+			if sig := tasks.Signature(board); sig != lastBoardSig {
+				enc.TaskList(board)
+				lastBoardSig = sig
+			}
 		}
 
 		if event.Content == nil {
@@ -222,25 +283,24 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 				// Thought parts carry the model's reasoning, not output text.
 				if part.Thought {
 					if isOutputAgent(author) {
-						sse.WriteSSE(w, cb.ReasoningDelta(part.Text))
+						enc.Reasoning(part.Text)
 					} else {
-						writeReasoning(w, threadID, runID, author, part.Text, step)
+						enc.AgentReasoning(author, step, part.Text)
 					}
 					continue
 				}
 				if isOutputAgent(author) {
-					sse.WriteSSE(w, cb.TextDelta(part.Text))
+					enc.Text(part.Text)
 					outputText += part.Text
 				} else {
-					writeAgentEvent(w, threadID, runID, author, "text_delta", part.Text, step)
+					enc.AgentText(author, step, part.Text)
 				}
 				hadPartialText = true
 			}
 			continue
 		}
 
-		// Capture token usage as it arrives. The final (terminal) usage wins,
-		// and we also track the last prompt token count as running context size.
+		// Capture token usage as it arrives. The final (terminal) usage wins.
 		if event.UsageMetadata != nil {
 			um := event.UsageMetadata
 			if um.TotalTokenCount > 0 || um.PromptTokenCount > 0 {
@@ -257,9 +317,9 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			// Thought parts from non-streaming agents → reasoning.
 			if part.Text != "" && part.Thought {
 				if isOutputAgent(author) {
-					sse.WriteSSE(w, cb.ReasoningDelta(part.Text))
+					enc.Reasoning(part.Text)
 				} else {
-					writeReasoning(w, threadID, runID, author, part.Text, step)
+					enc.AgentReasoning(author, step, part.Text)
 				}
 				continue
 			}
@@ -267,16 +327,16 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 			// Text from non-streaming sub-agents or code agents (no prior partials)
 			if part.Text != "" && !hadPartialText {
 				if isOutputAgent(author) {
-					sse.WriteSSE(w, cb.TextDelta(part.Text))
+					enc.Text(part.Text)
 					outputText += part.Text
 				} else {
-					writeAgentEvent(w, threadID, runID, author, "text_delta", part.Text, step)
+					enc.AgentText(author, step, part.Text)
 				}
 			}
 
 			// Emit text_done for intermediate agents when non-partial text arrives
 			if part.Text != "" && !isOutputAgent(author) {
-				writeAgentEvent(w, threadID, runID, author, "text_done", "", step)
+				enc.AgentTextDone(author, step)
 			}
 
 			// Tool confirmation request (adk_request_confirmation)
@@ -286,12 +346,6 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 					logger.Error().Err(err).Msg("failed to extract original call from confirmation")
 					continue
 				}
-
-				// Emit the tool call delta for the original tool so the UI sees it
-				argsJSON, _ := json.Marshal(originalCall.Args)
-				sse.WriteSSE(w, cb.ToolCallDelta(toolCallIdx, originalCall.ID, originalCall.Name, string(argsJSON)))
-				sse.WriteSSE(w, cb.Finish("tool_calls"))
-				toolCallIdx++
 
 				// Extract hint from the confirmation args
 				hint := ""
@@ -318,31 +372,15 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 					logger.Error().Err(err).Msg("failed to store HITL interrupt")
 				}
 
-				// Emit tool_interrupt SSE event for the frontend
-				evt := types.ToolInterruptEvent{}
-				evt.ToolInterrupt.ToolCallID = originalCall.ID
-				evt.ToolInterrupt.ToolName = originalCall.Name
-				evt.ToolInterrupt.Prompt = hint
-				evt.ToolInterrupt.Details = originalCall.Args
-				evt.ToolInterrupt.ThreadID = threadID
-				evt.AGUI = &types.AGUIEvent{
-					Type:         "CUSTOM",
-					Timestamp:    time.Now().UnixMilli(),
-					ThreadID:     threadID,
-					RunID:        runID,
-					Name:         "tool_interrupt",
-					ToolCallID:   originalCall.ID,
-					ToolCallName: originalCall.Name,
-					Value: map[string]any{
-						"prompt":  hint,
-						"details": originalCall.Args,
-					},
-				}
-				sse.WriteSSE(w, evt)
-
-				// Stream is paused — finish and return
-				sse.WriteSSE(w, cb.Finish("stop"))
-				sse.WriteDone(w)
+				// Emit the interrupt (the encoder owns the full pause sequence)
+				// and return — the stream is paused awaiting resume.
+				enc.ToolInterrupt(stream.Interrupt{
+					ToolCallID: originalCall.ID,
+					ToolName:   originalCall.Name,
+					Prompt:     hint,
+					Details:    originalCall.Args,
+					ThreadID:   threadID,
+				})
 				return
 			}
 
@@ -352,18 +390,14 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 				streamLog.Info().Str("sub_agent", author).Str("tool", fc.Name).Str("call_id", fc.ID).Int("tool_call_num", toolCallCount).Dur("elapsed", time.Since(startTime)).Msg("stream: tool call")
 				argsJSON, _ := json.Marshal(fc.Args)
 				if isOutputAgent(author) {
-					// Main-thread tool call → OpenAI tool_calls channel (as today).
-					// The main-thread Tool component shows the executing state, so we
-					// skip the run-level "executing" progress here.
-					sse.WriteSSE(w, cb.ToolCallDelta(toolCallIdx, fc.ID, fc.Name, string(argsJSON)))
-					sse.WriteSSE(w, cb.Finish("tool_calls"))
+					// Main-thread tool call → output channel.
+					enc.ToolCall(toolCallIdx, fc.ID, fc.Name, string(argsJSON))
 					toolCallIdx++
 				} else {
-					// Sub-agent tool call → attributed agent_event (NOT the OpenAI
-					// channel), plus an attributed "executing" progress so it lands
-					// in the sub-agent's card.
-					writeAgentToolCall(w, threadID, runID, author, fc.Name, fc.ID, string(argsJSON), step)
-					writeAgentProgress(w, threadID, runID, "executing", fmt.Sprintf("Running %s...", fc.Name), author, step)
+					// Sub-agent tool call → attributed, plus an "executing"
+					// progress so it lands in the sub-agent's card.
+					enc.AgentToolCall(author, step, fc.Name, fc.ID, string(argsJSON))
+					enc.AgentProgress("executing", fmt.Sprintf("Running %s...", fc.Name), author, step)
 				}
 			}
 
@@ -374,41 +408,20 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 					continue
 				}
 
-				// emit_artifact tool → push an artifact CUSTOM event to the UI.
-				// The tool returns the artifact payload in its response.
+				// emit_artifact tool → push an artifact to the UI.
 				if fr.Name == artifactToolName {
-					writeArtifact(w, threadID, runID, fr.Response)
-					// fall through to also emit a tool_result so the call/result
-					// pairing stays intact for the frontend.
+					enc.Artifact(fr.Response)
 				}
-				// todowrite tool → push a task_list CUSTOM event (snapshot). The
-				// tool returns the full todos list in its response. We still emit
-				// a normal tool_result below so call/result pairing stays intact.
+				// todowrite tool → push a task_list snapshot.
 				if fr.Name == todoToolName {
-					writeTaskList(w, threadID, runID, fr.Response)
+					enc.TaskList(tasks.MapTodos(fr.Response))
 				}
 				streamLog.Info().Str("sub_agent", author).Str("tool", fr.Name).Str("call_id", fr.ID).Dur("elapsed", time.Since(startTime)).Msg("stream: tool result")
-				content, _ := json.Marshal(fr.Response)
 				if isOutputAgent(author) {
-					// Main-thread tool result → OpenAI tool_result channel (as today).
-					evt := types.ToolResultEvent{}
-					evt.ToolResult.ToolCallID = fr.ID
-					evt.ToolResult.ToolName = fr.Name
-					evt.ToolResult.Result = fr.Response
-					evt.AGUI = &types.AGUIEvent{
-						Type:         "TOOL_CALL_RESULT",
-						Timestamp:    time.Now().UnixMilli(),
-						ThreadID:     threadID,
-						RunID:        runID,
-						MessageID:    fmt.Sprintf("tool-%s", fr.ID),
-						ToolCallID:   fr.ID,
-						ToolCallName: fr.Name,
-						Content:      string(content),
-					}
-					sse.WriteSSE(w, evt)
+					enc.ToolResult(fr.ID, fr.Name, fr.Response)
 				} else {
-					// Sub-agent tool result → attributed agent_event.
-					writeAgentToolResult(w, threadID, runID, author, fr.Name, fr.ID, string(content), step)
+					contentJSON, _ := json.Marshal(fr.Response)
+					enc.AgentToolResult(author, step, fr.Name, fr.ID, string(contentJSON))
 				}
 			}
 		}
@@ -433,314 +446,35 @@ func streamEvents(ctx context.Context, w http.ResponseWriter, core *Core, thread
 		Dur("elapsed", time.Since(startTime)).
 		Msg("stream: agent run complete")
 
-	// Emit the context/usage snapshot just before RUN_FINISHED.
+	// Emit the context/usage snapshot just before the run closes.
 	contextWindow := 0
 	if core.Config != nil && core.Config.Models != nil && core.ModelID != "" {
 		if m := core.Config.Models.FindModel(core.ModelID); m != nil {
 			contextWindow = m.ContextLength
 		}
 	}
-	writeContextUsage(w, threadID, runID, lastUsage, contextWindow)
-
-	// Stream closes when the runner completes (all workflow agents finished)
-	writeAGUI(w, &types.AGUIEvent{Type: "RUN_FINISHED", Timestamp: time.Now().UnixMilli(), ThreadID: threadID, RunID: runID})
-	if lastUsage.total > 0 {
-		sse.WriteSSE(w, cb.FinishWithUsage("stop", lastUsage.prompt, lastUsage.completion, lastUsage.total))
-	} else {
-		sse.WriteSSE(w, cb.Finish("stop"))
+	u := stream.Usage{
+		Prompt:        lastUsage.prompt,
+		Completion:    lastUsage.completion,
+		Total:         lastUsage.total,
+		ContextWindow: contextWindow,
 	}
-	sse.WriteDone(w)
+	enc.Usage(u, usageBreakdown(lastUsage))
+
+	// Final metadata carries the elapsed time, then close the run.
+	enc.Metadata(core.ModelID, core.AgentID, time.Since(startTime).Milliseconds())
+	enc.RunFinished(u)
 }
 
-func writeProgress(w http.ResponseWriter, threadID, runID, phase, message string) {
-	evt := types.AgentProgressEvent{}
-	evt.AgentProgress.Phase = phase
-	evt.AgentProgress.Message = message
-	evt.AGUI = &types.AGUIEvent{
-		Type:      "CUSTOM",
-		Timestamp: time.Now().UnixMilli(),
-		ThreadID:  threadID,
-		RunID:     runID,
-		Name:      "agent_progress",
-		Value: map[string]any{
-			"phase":   phase,
-			"message": message,
-		},
+// usageBreakdown attributes prompt tokens to History and completion tokens to
+// Completion, with System as a nominal sub-bucket (best-effort, no per-source
+// accounting available).
+func usageBreakdown(u usageTotals) []stream.Bucket {
+	return []stream.Bucket{
+		{Label: "System", Tokens: 0},
+		{Label: "History", Tokens: u.prompt},
+		{Label: "Completion", Tokens: u.completion},
 	}
-	sse.WriteSSE(w, evt)
-}
-
-func writeAgentProgress(w http.ResponseWriter, threadID, runID, phase, message, agentName string, step int) {
-	evt := types.AgentProgressEvent{}
-	evt.AgentProgress.Phase = phase
-	evt.AgentProgress.Message = message
-	evt.AgentProgress.Agent = agentName
-	evt.AgentProgress.Step = step
-	aguiType := "STEP_STARTED"
-	if phase == "agent_done" {
-		aguiType = "STEP_FINISHED"
-	}
-	evt.AGUI = &types.AGUIEvent{
-		Type:      aguiType,
-		Timestamp: time.Now().UnixMilli(),
-		ThreadID:  threadID,
-		RunID:     runID,
-		StepName:  agentName,
-		RawEvent: map[string]any{
-			"phase":   phase,
-			"message": message,
-			"step":    step,
-		},
-	}
-	sse.WriteSSE(w, evt)
-}
-
-// writeAgentDone emits an agent_done progress event carrying how long the
-// sub-agent ran (duration_ms), so the UI can show per-agent timing.
-func writeAgentDone(w http.ResponseWriter, threadID, runID, agentName string, step int, durationMs int64) {
-	evt := types.AgentProgressEvent{}
-	evt.AgentProgress.Phase = "agent_done"
-	evt.AgentProgress.Message = fmt.Sprintf("%s completed", agentName)
-	evt.AgentProgress.Agent = agentName
-	evt.AgentProgress.Step = step
-	evt.AgentProgress.DurationMs = durationMs
-	evt.AGUI = &types.AGUIEvent{
-		Type:      "STEP_FINISHED",
-		Timestamp: time.Now().UnixMilli(),
-		ThreadID:  threadID,
-		RunID:     runID,
-		StepName:  agentName,
-		RawEvent: map[string]any{
-			"phase":       "agent_done",
-			"step":        step,
-			"duration_ms": durationMs,
-		},
-	}
-	sse.WriteSSE(w, evt)
-}
-
-func writeAgentEvent(w http.ResponseWriter, threadID, runID, agentName, eventType, content string, step int) {
-	evt := types.AgentEventEvent{}
-	evt.AgentEvent.Agent = agentName
-	evt.AgentEvent.Type = eventType
-	evt.AgentEvent.Content = content
-	evt.AgentEvent.Step = step
-	aguiType := "CUSTOM"
-	if eventType == "text_delta" {
-		aguiType = "TEXT_MESSAGE_CONTENT"
-	} else if eventType == "text_done" {
-		aguiType = "TEXT_MESSAGE_END"
-	}
-	evt.AGUI = &types.AGUIEvent{
-		Type:      aguiType,
-		Timestamp: time.Now().UnixMilli(),
-		ThreadID:  threadID,
-		RunID:     runID,
-		MessageID: fmt.Sprintf("%s-%d", agentName, step),
-		Delta:     content,
-		RawEvent: map[string]any{
-			"agent": agentName,
-			"type":  eventType,
-			"step":  step,
-		},
-	}
-	sse.WriteSSE(w, evt)
-}
-
-func writeAGUI(w http.ResponseWriter, event *types.AGUIEvent) {
-	sse.WriteSSE(w, map[string]any{"ag_ui": event})
-}
-
-// usageTotals holds token counts captured from the ADK run.
-type usageTotals struct {
-	prompt     int
-	completion int
-	total      int
-}
-
-// artifactToolName is the built-in tool agents call to push an artifact to the UI.
-const artifactToolName = "emit_artifact"
-
-// todoToolName is the built-in tool agents call to surface a structured todo
-// list (task_list snapshot) to the UI.
-const todoToolName = "todowrite"
-
-// writeReasoning emits a sub-agent (non-output) reasoning delta. The type is
-// `reasoning_delta` to parallel `text_delta`; the payload is carried in
-// `reasoning_content` (text deltas use `content`). The output agent's reasoning
-// is emitted via cb.ReasoningDelta instead.
-func writeReasoning(w http.ResponseWriter, threadID, runID, agentName, content string, step int) {
-	evt := types.AgentEventEvent{}
-	evt.AgentEvent.Agent = agentName
-	evt.AgentEvent.Type = "reasoning_delta"
-	evt.AgentEvent.ReasoningContent = content
-	evt.AgentEvent.Step = step
-	evt.AGUI = &types.AGUIEvent{
-		Type:      "THINKING_TEXT_MESSAGE_CONTENT",
-		Timestamp: time.Now().UnixMilli(),
-		ThreadID:  threadID,
-		RunID:     runID,
-		MessageID: fmt.Sprintf("%s-%d", agentName, step),
-		Delta:     content,
-		RawEvent: map[string]any{
-			"agent": agentName,
-			"type":  "reasoning_delta",
-			"step":  step,
-		},
-	}
-	sse.WriteSSE(w, evt)
-}
-
-// writeAgentToolCall emits an attributed tool_call agent_event for a sub-agent.
-// Sub-agent tool calls do NOT go on the OpenAI tool_calls channel (that's
-// reserved for the output/main-thread agent).
-func writeAgentToolCall(w http.ResponseWriter, threadID, runID, agentName, toolName, toolCallID, args string, step int) {
-	evt := types.AgentEventEvent{}
-	evt.AgentEvent.Agent = agentName
-	evt.AgentEvent.Type = "tool_call"
-	evt.AgentEvent.ToolName = toolName
-	evt.AgentEvent.ToolCallID = toolCallID
-	evt.AgentEvent.Content = args
-	evt.AgentEvent.Step = step
-	evt.AGUI = &types.AGUIEvent{
-		Type:         "TOOL_CALL_START",
-		Timestamp:    time.Now().UnixMilli(),
-		ThreadID:     threadID,
-		RunID:        runID,
-		MessageID:    fmt.Sprintf("%s-%d", agentName, step),
-		ToolCallID:   toolCallID,
-		ToolCallName: toolName,
-	}
-	sse.WriteSSE(w, evt)
-}
-
-// writeAgentToolResult emits an attributed tool_result agent_event for a
-// sub-agent.
-func writeAgentToolResult(w http.ResponseWriter, threadID, runID, agentName, toolName, toolCallID, content string, step int) {
-	evt := types.AgentEventEvent{}
-	evt.AgentEvent.Agent = agentName
-	evt.AgentEvent.Type = "tool_result"
-	evt.AgentEvent.ToolName = toolName
-	evt.AgentEvent.ToolCallID = toolCallID
-	evt.AgentEvent.Content = content
-	evt.AgentEvent.Step = step
-	evt.AGUI = &types.AGUIEvent{
-		Type:         "TOOL_CALL_RESULT",
-		Timestamp:    time.Now().UnixMilli(),
-		ThreadID:     threadID,
-		RunID:        runID,
-		MessageID:    fmt.Sprintf("%s-%d", agentName, step),
-		ToolCallID:   toolCallID,
-		ToolCallName: toolName,
-		Content:      content,
-	}
-	sse.WriteSSE(w, evt)
-}
-
-// writeContextUsage emits a CUSTOM "context_usage" event carrying token usage
-// and a best-effort context breakdown. context_used is the running context
-// size (prompt tokens of the final turn); context_window is the model's
-// configured context_length (0 if unknown).
-func writeContextUsage(w http.ResponseWriter, threadID, runID string, u usageTotals, contextWindow int) {
-	// Best-effort breakdown. We cannot bucket prompt tokens precisely without
-	// per-source accounting, so we attribute prompt tokens to History and
-	// completion tokens to Completion, with System as a nominal sub-bucket.
-	breakdown := []map[string]any{
-		{"label": "System", "tokens": 0},
-		{"label": "History", "tokens": u.prompt},
-		{"label": "Completion", "tokens": u.completion},
-	}
-	evt := types.AGUIEvent{
-		Type:      "CUSTOM",
-		Timestamp: time.Now().UnixMilli(),
-		ThreadID:  threadID,
-		RunID:     runID,
-		Name:      "context_usage",
-		Value: map[string]any{
-			"prompt_tokens":     u.prompt,
-			"completion_tokens": u.completion,
-			"total_tokens":      u.total,
-			"context_used":      u.prompt,
-			"context_window":    contextWindow,
-			"breakdown":         breakdown,
-		},
-	}
-	sse.WriteSSE(w, map[string]any{"ag_ui": evt})
-}
-
-// writeTaskList emits a CUSTOM "task_list" snapshot from a todowrite tool
-// response. The response carries a "todos" array of {content,status,priority?}.
-// Each call replaces the whole list (snapshot semantics).
-func writeTaskList(w http.ResponseWriter, threadID, runID string, response map[string]any) {
-	rawTodos, _ := response["todos"].([]any)
-	tasks := make([]map[string]any, 0, len(rawTodos))
-	for i, rt := range rawTodos {
-		todo, ok := rt.(map[string]any)
-		if !ok {
-			continue
-		}
-		str := func(key string) string {
-			if v, ok := todo[key].(string); ok {
-				return v
-			}
-			return ""
-		}
-		status := str("status")
-		if status == "" {
-			status = "pending"
-		}
-		task := map[string]any{
-			"id":     fmt.Sprintf("%d", i),
-			"title":  str("content"),
-			"status": status,
-		}
-		if p := str("priority"); p != "" {
-			task["priority"] = p
-		}
-		tasks = append(tasks, task)
-	}
-	evt := types.AGUIEvent{
-		Type:      "CUSTOM",
-		Timestamp: time.Now().UnixMilli(),
-		ThreadID:  threadID,
-		RunID:     runID,
-		Name:      "task_list",
-		Value:     map[string]any{"tasks": tasks},
-	}
-	sse.WriteSSE(w, map[string]any{"ag_ui": evt})
-}
-
-// writeArtifact emits a CUSTOM "artifact" event from an emit_artifact tool
-// response. The response map carries id/title/kind/content/language.
-func writeArtifact(w http.ResponseWriter, threadID, runID string, response map[string]any) {
-	str := func(key string) string {
-		if v, ok := response[key].(string); ok {
-			return v
-		}
-		return ""
-	}
-	id := str("id")
-	if id == "" {
-		id = uuid.New().String()
-	}
-	value := map[string]any{
-		"id":      id,
-		"title":   str("title"),
-		"kind":    str("kind"),
-		"content": str("content"),
-	}
-	if lang := str("language"); lang != "" {
-		value["language"] = lang
-	}
-	evt := types.AGUIEvent{
-		Type:      "CUSTOM",
-		Timestamp: time.Now().UnixMilli(),
-		ThreadID:  threadID,
-		RunID:     runID,
-		Name:      "artifact",
-		Value:     value,
-	}
-	sse.WriteSSE(w, map[string]any{"ag_ui": evt})
 }
 
 func messagesToContents(messages []types.ChatMessage) []*genai.Content {

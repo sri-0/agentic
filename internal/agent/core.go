@@ -45,22 +45,31 @@ type OverrideCoreFunc func(agentCfg *config.AgentConfig, modelID, provider strin
 // model when it maps to a known sub-agent, else the root model. When the config
 // has been built with a model override, every sub-agent carries the override
 // model, so ModelID ends up as the override model id (which is what we want).
-func ConfigureCore(core *Core, agentCfg *config.AgentConfig) {
+func ConfigureCore(core *Core, agentsCfg *config.AgentsConfig, agentCfg *config.AgentConfig) {
+	// Resolve sub-agent configs from the flat roster (may be empty / error for
+	// single-agent configs — in that case resolved is nil and we degrade).
+	var resolved []*config.AgentConfig
+	if agentsCfg != nil {
+		resolved, _ = agentsCfg.ResolveSubAgents(agentCfg)
+	}
+
 	if agentCfg.OutputAgent != "" {
 		core.OutputAgent = agentCfg.OutputAgent
-	} else if len(agentCfg.SubAgents) > 0 {
-		core.OutputAgent = agentCfg.SubAgents[len(agentCfg.SubAgents)-1].Name
+	} else if len(resolved) > 0 {
+		core.OutputAgent = resolved[len(resolved)-1].Name
 	}
 
 	// Record sub-agent names (multi-agent runs publish a task-list snapshot).
 	core.SubAgentNames = nil
-	for _, sa := range agentCfg.SubAgents {
+	for _, sa := range resolved {
 		core.SubAgentNames = append(core.SubAgentNames, sa.Name)
 	}
 
 	core.ModelID = agentCfg.Model
-	if sa := agentCfg.FindSubAgent(core.OutputAgent); sa != nil && sa.Model != "" {
-		core.ModelID = sa.Model
+	if agentsCfg != nil {
+		if sa, err := agentsCfg.ResolveSubAgentByName(agentCfg, core.OutputAgent); err == nil && sa.Model != "" {
+			core.ModelID = sa.Model
+		}
 	}
 }
 

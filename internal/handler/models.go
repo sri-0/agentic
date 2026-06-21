@@ -54,7 +54,10 @@ func Agents(cfg *config.Config) http.HandlerFunc {
 
 	if cfg.Agents != nil {
 		for _, a := range cfg.Agents.Agents {
-			data = append(data, buildAgentEntry(a, created))
+			if a.Internal {
+				continue
+			}
+			data = append(data, buildAgentEntry(cfg, a, created))
 		}
 	}
 
@@ -69,7 +72,7 @@ func Agents(cfg *config.Config) http.HandlerFunc {
 	}
 }
 
-func buildAgentEntry(a config.AgentConfig, created int64) map[string]any {
+func buildAgentEntry(cfg *config.Config, a config.AgentConfig, created int64) map[string]any {
 	entry := map[string]any{
 		"id":          a.ID,
 		"object":      "agent",
@@ -81,7 +84,7 @@ func buildAgentEntry(a config.AgentConfig, created int64) map[string]any {
 		"model":       a.Model,
 		"provider":    a.Provider,
 		"tools":       a.Tools,
-		"sub_agents":  buildSubAgentEntries(a.SubAgents),
+		"sub_agents":  buildSubAgentEntries(cfg, a),
 	}
 	if a.SystemPrompt != "" {
 		entry["system_prompt"] = a.SystemPrompt
@@ -104,9 +107,22 @@ func buildAgentEntry(a config.AgentConfig, created int64) map[string]any {
 	return entry
 }
 
-func buildSubAgentEntries(agents []config.AgentConfig) []map[string]any {
-	entries := make([]map[string]any, 0, len(agents))
-	for _, a := range agents {
+func buildSubAgentEntries(cfg *config.Config, parent config.AgentConfig) []map[string]any {
+	if cfg.Agents == nil || len(parent.SubAgents) == 0 {
+		return []map[string]any{}
+	}
+	resolved, err := cfg.Agents.ResolveSubAgents(&parent)
+	if err != nil {
+		// A single bad id shouldn't fail the whole response; resolve what we can.
+		resolved = nil
+		for _, id := range parent.SubAgents {
+			if sub := cfg.Agents.FindAgent(id); sub != nil {
+				resolved = append(resolved, sub)
+			}
+		}
+	}
+	entries := make([]map[string]any, 0, len(resolved))
+	for _, a := range resolved {
 		entry := map[string]any{
 			"id":          a.ID,
 			"type":        a.Type,

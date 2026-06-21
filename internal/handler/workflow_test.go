@@ -166,30 +166,50 @@ func sendChatRequest(t *testing.T, handler http.HandlerFunc, model, message, thr
 	return w
 }
 
-// deepResearchAgentCfg returns the standard test config for the deep research agent.
-func deepResearchAgentCfg() config.AgentConfig {
-	return config.AgentConfig{
-		ID:          "deep-research",
-		Type:        "deep-research",
-		Name:        "deep_research_pipeline",
-		OutputAgent: "report_generator",
-		SubAgents: []config.AgentConfig{
-			{Name: "research_planner", Model: "openai/gpt-4o", Provider: "test", OutputKey: "research_plan", SystemPrompt: "Plan research for the query."},
-			{Name: "document_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "analysis_findings", SystemPrompt: "Analyze: {current_document}"},
-			{Name: "data_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "database_results", SystemPrompt: "Query data for: {current_document}", Tools: []string{"query_research_db"}},
-			{Name: "findings_summarizer", Model: "openai/gpt-4o", Provider: "test", OutputKey: "current_findings", SystemPrompt: "Summarize: {analysis_findings} {database_results}"},
-			{Name: "gap_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "research_gaps", SystemPrompt: "Identify gaps: {research_plan} vs {all_findings}"},
-			{Name: "report_generator", Model: "openai/gpt-4o", Provider: "test", OutputKey: "draft_report", SystemPrompt: "Report on: {all_findings} gaps: {research_gaps} feedback: {critic_feedback}"},
-			{Name: "report_critic", Model: "openai/gpt-4o", Provider: "test", OutputKey: "critic_feedback", SystemPrompt: "Review: {draft_report}. If good say APPROVED."},
+// deepResearchAgentCfg returns the standard test config for the deep research
+// agent: the parent entry plus its worker roster entries (flat roster).
+func deepResearchAgentCfg() []config.AgentConfig {
+	return []config.AgentConfig{
+		{
+			ID:          "deep-research",
+			Type:        "deep-research",
+			Name:        "deep_research_pipeline",
+			OutputAgent: "report_generator",
+			SubAgents:   []string{"research_planner", "document_analyst", "data_analyst", "findings_summarizer", "gap_analyst", "report_generator", "report_critic"},
 		},
+		{ID: "research_planner", Internal: true, Name: "research_planner", Model: "openai/gpt-4o", Provider: "test", OutputKey: "research_plan", SystemPrompt: "Plan research for the query."},
+		{ID: "document_analyst", Internal: true, Name: "document_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "analysis_findings", SystemPrompt: "Analyze: {current_document}"},
+		{ID: "data_analyst", Internal: true, Name: "data_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "database_results", SystemPrompt: "Query data for: {current_document}", Tools: []string{"query_research_db"}},
+		{ID: "findings_summarizer", Internal: true, Name: "findings_summarizer", Model: "openai/gpt-4o", Provider: "test", OutputKey: "current_findings", SystemPrompt: "Summarize: {analysis_findings} {database_results}"},
+		{ID: "gap_analyst", Internal: true, Name: "gap_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "research_gaps", SystemPrompt: "Identify gaps: {research_plan} vs {all_findings}"},
+		{ID: "report_generator", Internal: true, Name: "report_generator", Model: "openai/gpt-4o", Provider: "test", OutputKey: "draft_report", SystemPrompt: "Report on: {all_findings} gaps: {research_gaps} feedback: {critic_feedback}"},
+		{ID: "report_critic", Internal: true, Name: "report_critic", Model: "openai/gpt-4o", Provider: "test", OutputKey: "critic_feedback", SystemPrompt: "Review: {draft_report}. If good say APPROVED."},
+	}
+}
+
+// triageRosterCfg returns the triage parent plus its worker roster entries.
+func triageRosterCfg() []config.AgentConfig {
+	return []config.AgentConfig{
+		{
+			ID:        "triage-agent",
+			Type:      "triage",
+			Name:      "triage_pipeline",
+			SubAgents: []string{"issue_extractor", "keyword_analyst", "incident_researcher", "severity_classifier", "report_agent"},
+		},
+		{ID: "issue_extractor", Internal: true, Name: "issue_extractor", Model: "openai/gpt-4o", Provider: "test", OutputKey: "extracted_issue", SystemPrompt: "Extract issue details from the incident report."},
+		{ID: "keyword_analyst", Internal: true, Name: "keyword_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "keyword_analysis", SystemPrompt: "Analyze keywords: {extracted_issue}", Tools: []string{"classify_incident"}},
+		{ID: "incident_researcher", Internal: true, Name: "incident_researcher", Model: "openai/gpt-4o", Provider: "test", OutputKey: "incident_research", SystemPrompt: "Research past incidents: {extracted_issue}", Tools: []string{"get_incident_context", "opensearch_retrieve"}},
+		{ID: "severity_classifier", Internal: true, Name: "severity_classifier", Model: "openai/gpt-4o", Provider: "test", OutputKey: "severity_classification", SystemPrompt: "Classify severity: {extracted_issue}", Tools: []string{"classify_incident"}},
+		{ID: "report_agent", Internal: true, Name: "report_agent", Model: "openai/gpt-4o", Provider: "test", OutputKey: "triage_report", SystemPrompt: "Triage report: {keyword_analysis} {incident_research} {severity_classification}", Tools: []string{"trigger_alert"}},
 	}
 }
 
 // buildDeepResearchHandler creates a fully wired handler for deep research tests.
 func buildDeepResearchHandler(t *testing.T, cfg *config.Config) http.HandlerFunc {
 	t.Helper()
-	agentCfg := deepResearchAgentCfg()
-	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
+	roster := deepResearchAgentCfg()
+	cfg.Agents = &config.AgentsConfig{Agents: roster}
+	agentCfg := roster[0]
 
 	deps := tools.Deps{RAGClient: rag.NewClient(nil, nil)}
 	rootAgent, err := deepresearch.NewAgent(cfg, &agentCfg, deps)
@@ -390,53 +410,9 @@ func TestWorkflow_TriageAgent(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := makeTestConfig(t, upstream.URL)
-	agentCfg := config.AgentConfig{
-		ID:   "triage-agent",
-		Type: "triage",
-		Name: "triage_pipeline",
-		SubAgents: []config.AgentConfig{
-			{
-				Name:         "issue_extractor",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "extracted_issue",
-				SystemPrompt: "Extract issue details from the incident report.",
-			},
-			{
-				Name:         "keyword_analyst",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "keyword_analysis",
-				SystemPrompt: "Analyze keywords: {extracted_issue}",
-				Tools:        []string{"classify_incident"},
-			},
-			{
-				Name:         "incident_researcher",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "incident_research",
-				SystemPrompt: "Research past incidents: {extracted_issue}",
-				Tools:        []string{"get_incident_context", "opensearch_retrieve"},
-			},
-			{
-				Name:         "severity_classifier",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "severity_classification",
-				SystemPrompt: "Classify severity: {extracted_issue}",
-				Tools:        []string{"classify_incident"},
-			},
-			{
-				Name:         "report_agent",
-				Model:        "openai/gpt-4o",
-				Provider:     "test",
-				OutputKey:    "triage_report",
-				SystemPrompt: "Triage report: {keyword_analysis} {incident_research} {severity_classification}",
-				Tools:        []string{"trigger_alert"},
-			},
-		},
-	}
-	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{agentCfg}}
+	roster := triageRosterCfg()
+	cfg.Agents = &config.AgentsConfig{Agents: roster}
+	agentCfg := roster[0]
 
 	deps := tools.Deps{RAGClient: rag.NewClient(nil, nil)}
 	rootAgent, err := triage.NewAgent(cfg, &agentCfg, deps)
@@ -493,17 +469,9 @@ func TestWorkflow_MultiAgentRegistry(t *testing.T) {
 		Model: "openai/gpt-4o", Provider: "test", SystemPrompt: "You are helpful.",
 		Tools: []string{"calculate"},
 	}
-	triageCfg := config.AgentConfig{
-		ID: "triage-agent", Type: "triage", Name: "triage_pipeline",
-		SubAgents: []config.AgentConfig{
-			{Name: "issue_extractor", Model: "openai/gpt-4o", Provider: "test", OutputKey: "extracted_issue", SystemPrompt: "Extract."},
-			{Name: "keyword_analyst", Model: "openai/gpt-4o", Provider: "test", OutputKey: "keyword_analysis", SystemPrompt: "Keywords: {extracted_issue}", Tools: []string{"classify_incident"}},
-			{Name: "incident_researcher", Model: "openai/gpt-4o", Provider: "test", OutputKey: "incident_research", SystemPrompt: "Research: {extracted_issue}", Tools: []string{"get_incident_context"}},
-			{Name: "severity_classifier", Model: "openai/gpt-4o", Provider: "test", OutputKey: "severity_classification", SystemPrompt: "Severity: {extracted_issue}", Tools: []string{"classify_incident"}},
-			{Name: "report_agent", Model: "openai/gpt-4o", Provider: "test", OutputKey: "triage_report", SystemPrompt: "Report: {keyword_analysis} {incident_research} {severity_classification}", Tools: []string{"trigger_alert"}},
-		},
-	}
-	cfg.Agents = &config.AgentsConfig{Agents: []config.AgentConfig{basicCfg, triageCfg}}
+	triageRoster := triageRosterCfg()
+	triageCfg := triageRoster[0]
+	cfg.Agents = &config.AgentsConfig{Agents: append([]config.AgentConfig{basicCfg}, triageRoster...)}
 
 	deps := tools.Deps{RAGClient: rag.NewClient(nil, nil)}
 	reg := agent.NewRegistry()

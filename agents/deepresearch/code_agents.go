@@ -105,7 +105,7 @@ func documentLoopRun(
 				// ── Fetch document ────────────────────────────
 				logger.Info().Str("agent", "document_loop").Int("doc", i+1).Int("total", maxDocs).Str("doc_id", docIDs[i]).Msg("fetching document")
 
-				doc, err := ragClient.GetByID(docIDs[i])
+				doc, err := ragClient.GetByDocID(docIDs[i])
 				if err != nil {
 					logger.Error().Err(err).Str("agent", "document_loop").Str("doc_id", docIDs[i]).Msg("fetch failed")
 					yield(nil, fmt.Errorf("fetch doc %s: %w", docIDs[i], err))
