@@ -70,6 +70,25 @@ func (e *Encoder) RunFinished(u stream.Usage) {
 	e.sink.SendRaw("[DONE]")
 }
 
+// RunFailed emits an AG-UI RUN_ERROR (not RUN_FINISHED) plus a finish chunk with
+// reason "error", so a failed run renders as an error rather than a normal,
+// "Completed" assistant message.
+func (e *Encoder) RunFailed(msg string) {
+	if msg == "" {
+		msg = "the model request failed"
+	}
+	e.writeAGUI(&types.AGUIEvent{
+		Type:      "RUN_ERROR",
+		Timestamp: time.Now().UnixMilli(),
+		ThreadID:  e.threadID,
+		RunID:     e.runID,
+		Content:   msg,
+		Value:     map[string]any{"message": msg},
+	})
+	e.sink.Send(e.cb.Finish("error"))
+	e.sink.SendRaw("[DONE]")
+}
+
 // ── Run-level progress ───────────────────────────────────────────────────────
 
 // Progress ports agent.writeProgress.

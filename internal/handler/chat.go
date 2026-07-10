@@ -17,6 +17,7 @@ import (
 	"agentic/internal/stream/aisdk"
 	"agentic/internal/types"
 	"agentic/pkg/db/opensearch"
+	openaiproxy "agentic/pkg/genai/openai"
 	pkgmemory "agentic/pkg/memory"
 
 	"github.com/google/uuid"
@@ -99,6 +100,9 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			if err != nil {
 				body = rawBody
 			}
+			// Cap max_tokens so the provider does not reserve the model's full
+			// (huge) max output and 402 the request. Honour a smaller client value.
+			body = capMaxTokens(body, openaiproxy.DefaultMaxOutputTokens)
 
 			format := stream.ParseFormat(r.URL.Query().Get("format"))
 			logger.Info().Str("model", resolvedModel).Str("upstream", baseURL).Str("format", string(format)).Bool("use_rag", req.UseRAG).Msg("chat: proxying to upstream")
@@ -213,9 +217,11 @@ func proxyAISDK(w http.ResponseWriter, baseURL, apiKey string, body []byte, clie
 
 	resp, err := proxy.OpenUpstream(baseURL, apiKey, "/chat/completions", body, client)
 	if err != nil {
+		// A failed upstream request is an ERROR, not a normal completion: surface
+		// it as an error part so the run does not render as a "Completed" assistant
+		// message containing the raw error text.
 		enc.RunStarted()
-		enc.Text("Upstream request failed: " + err.Error())
-		enc.RunFinished(stream.Usage{})
+		enc.RunFailed("Upstream request failed: " + err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -223,8 +229,7 @@ func proxyAISDK(w http.ResponseWriter, baseURL, apiKey string, body []byte, clie
 		raw, _ := io.ReadAll(resp.Body)
 		logger.Warn().Int("status", resp.StatusCode).Str("body", string(raw)).Msg("chat: upstream error (aisdk proxy)")
 		enc.RunStarted()
-		enc.Text(upstreamErrorText(raw))
-		enc.RunFinished(stream.Usage{})
+		enc.RunFailed(upstreamErrorText(raw))
 		return
 	}
 	stream.PumpOpenAI(resp.Body, enc, model)
@@ -277,6 +282,29 @@ func lastUserContent(messages []types.ChatMessage) string {
 		}
 	}
 	return ""
+}
+
+// capMaxTokens ensures the outbound request body carries a max_tokens no larger
+// than cap. Without an explicit value, OpenRouter reserves the model's full max
+// output (e.g. 64000 for Claude Sonnet 4.5), which 402s on modest-credit
+// accounts before a single token streams. A client-supplied smaller value is
+// preserved. Returns body unchanged if it can't be parsed.
+func capMaxTokens(body []byte, cap int) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	if v, ok := m["max_tokens"]; ok {
+		if n, ok := v.(float64); ok && n > 0 && int(n) <= cap {
+			return body // client asked for a smaller cap; honour it
+		}
+	}
+	m["max_tokens"] = cap
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func upstreamErrorText(raw []byte) string {

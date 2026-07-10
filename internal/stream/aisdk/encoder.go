@@ -89,6 +89,19 @@ func (e *Encoder) RunFinished(u stream.Usage) {
 	_ = e.sink.SendRaw("[DONE]")
 }
 
+// RunFailed closes any open part and emits an AI SDK `error` part instead of a
+// normal finish, so the client renders a failed run rather than an assistant
+// message labelled "Completed". The stream is then framed closed with [DONE].
+func (e *Encoder) RunFailed(msg string) {
+	e.closeReasoning()
+	e.closeText()
+	if msg == "" {
+		msg = "the model request failed"
+	}
+	e.send(map[string]any{"type": "error", "errorText": msg})
+	_ = e.sink.SendRaw("[DONE]")
+}
+
 // ── run-level progress ───────────────────────────────────────────────────────
 
 // Progress emits an un-attributed (run-level) progress data part.
