@@ -124,6 +124,7 @@ func ThreadsCreate(osClient *opensearch.Client, logger zerolog.Logger) http.Hand
 func ThreadsGet(osClient *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := mux.Vars(r)["id"]
+		userID := getUserID(r)
 
 		hit, err := osClient.GetDocument(r.Context(), opensearch.IndexThreads, id)
 		if err != nil {
@@ -133,6 +134,12 @@ func ThreadsGet(osClient *opensearch.Client, logger zerolog.Logger) http.Handler
 		}
 
 		thread := threadFromHit(*hit)
+		// Ownership gate: a thread id alone must not expose another user's thread.
+		// Return 404 (not 403) so existence isn't disclosed.
+		if thread.UserID != "" && thread.UserID != userID {
+			http.Error(w, `{"error":"thread not found"}`, http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(thread)
 	}
@@ -219,11 +226,20 @@ func ThreadsMessagesList(osClient *opensearch.Client, logger zerolog.Logger) htt
 			http.Error(w, `{"error":"missing thread id"}`, http.StatusBadRequest)
 			return
 		}
+		userID := getUserID(r)
 
+		// Scope by BOTH thread_id AND user_id so a user can only read their own
+		// thread's messages — a thread id alone must not leak another user's
+		// conversation (mirrors the ownership policy in sessions.go).
 		query := map[string]any{
 			"size": 1000,
 			"query": map[string]any{
-				"term": map[string]any{"thread_id": threadID},
+				"bool": map[string]any{
+					"must": []any{
+						map[string]any{"term": map[string]any{"thread_id": threadID}},
+						map[string]any{"term": map[string]any{"user_id": userID}},
+					},
+				},
 			},
 			"sort": []any{
 				map[string]any{"created_at": map[string]any{"order": "asc"}},
