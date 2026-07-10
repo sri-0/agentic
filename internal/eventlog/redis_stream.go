@@ -64,6 +64,9 @@ func (r *RedisStreamLog) Append(ctx context.Context, sessionID string, ev AgentE
 // Read replays backlog after afterSeq via XRANGE, then (if follow) tails via
 // XREAD BLOCK until ctx is done or a terminal run-status is delivered.
 func (r *RedisStreamLog) Read(ctx context.Context, sessionID string, afterSeq int64, follow bool) (<-chan SeqEvent, error) {
+	if afterSeq < 0 {
+		afterSeq = 0
+	}
 	out := make(chan SeqEvent)
 	go func() {
 		defer close(out)
@@ -115,9 +118,10 @@ func (r *RedisStreamLog) Read(ctx context.Context, sessionID string, afterSeq in
 				if !deliver(ctx, out, e) {
 					return
 				}
-				if terminalEntry(e) {
-					return
-				}
+				// W1: terminal events do NOT close a follow reader. Runs own
+				// terminal state, not sessions — a session stream holds many
+				// turns. Closure policy lives in the pump; a follow tail here
+				// closes only when ctx is cancelled.
 			}
 		}
 	}()
@@ -135,11 +139,6 @@ func deliver(ctx context.Context, out chan<- SeqEvent, e valkey.XRangeEntry) boo
 	case <-ctx.Done():
 		return false
 	}
-}
-
-func terminalEntry(e valkey.XRangeEntry) bool {
-	ev, ok := decodeEntry(e)
-	return ok && ev.IsTerminal()
 }
 
 func decodeEntry(e valkey.XRangeEntry) (AgentEvent, bool) {

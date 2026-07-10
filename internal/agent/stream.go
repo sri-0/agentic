@@ -153,7 +153,13 @@ func StreamResumeRunFormat(ctx context.Context, w http.ResponseWriter, format st
 // format-agnostic (the encoder owns the byte format). RunStarted / initial
 // metadata are emitted by the callers, so the AI-SDK stream opens with the
 // required `start` chunk even on the resume path.
-func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID, runID string, content *genai.Content, saver *chat.MessageSaver, logger zerolog.Logger) {
+// streamEvents processes the run loop and returns the terminal outcome. A nil
+// error means the run completed normally (done); a non-nil error is a runner
+// failure that callers map to run-status{error} (H5) rather than silently
+// reporting success. HITL interrupts are signalled via the encoder's
+// Interrupted() (awaiting-input), independent of this error.
+func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID, runID string, content *genai.Content, saver *chat.MessageSaver, logger zerolog.Logger) error {
+	var runErr error
 	toolCallIdx := int64(0)
 	hadPartialText := false
 	var outputText string // accumulates output agent text for persistence
@@ -252,6 +258,7 @@ func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID,
 			} else {
 				enc.Progress("error", fmt.Sprintf("Error: %v", err))
 			}
+			runErr = err
 			break
 		}
 
@@ -381,7 +388,7 @@ func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID,
 					Details:    originalCall.Args,
 					ThreadID:   threadID,
 				})
-				return
+				return nil
 			}
 
 			// Regular tool call (non-confirmation) — emit delta for UI
@@ -464,6 +471,7 @@ func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID,
 	// Final metadata carries the elapsed time, then close the run.
 	enc.Metadata(core.ModelID, core.AgentID, time.Since(startTime).Milliseconds())
 	enc.RunFinished(u)
+	return runErr
 }
 
 // usageBreakdown attributes prompt tokens to History and completion tokens to

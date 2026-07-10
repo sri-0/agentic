@@ -33,20 +33,25 @@ func StreamAgentRunBackground(ctx context.Context, w http.ResponseWriter, format
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
 	enc := newEncoder(format, stream.NewSSESink(w), requestID, agentCore, sessionID)
 
-	if _, err := core.Start(RunRequest{SessionID: sessionID, UserID: userID, Core: agentCore, Messages: messages, Saver: saver}); err != nil {
+	h, err := core.Start(RunRequest{SessionID: sessionID, UserID: userID, Core: agentCore, Messages: messages, Saver: saver})
+	if err != nil {
 		logger.Error().Err(err).Str("session", sessionID).Msg("coordinator start failed")
 		enc.RunStarted()
 		enc.Progress("error", "Failed to start run")
 		enc.RunFinished(stream.Usage{})
 		return
 	}
-	ch, err := core.Log().Read(ctx, sessionID, 0, true)
+	// Run-attach: read from StartSeq-1 so this reader only sees THIS run's events
+	// (fixes multi-turn — a 2nd turn attaches after turn 1's terminal and closes
+	// only at turn 2's terminal). afterSeq is clamped >= 0 by the log.
+	after := h.StartSeq - 1
+	ch, err := core.Log().Read(ctx, sessionID, after, true)
 	if err != nil {
 		enc.RunStarted()
 		enc.RunFinished(stream.Usage{})
 		return
 	}
-	PumpEventLog(ctx, ch, enc)
+	PumpEventLog(ctx, ch, enc, PumpRunAttach)
 }
 
 // StreamSessionAttach attaches to an existing session's event log from afterSeq
@@ -63,5 +68,7 @@ func StreamSessionAttach(ctx context.Context, w http.ResponseWriter, format stre
 		enc.RunFinished(stream.Usage{})
 		return
 	}
-	PumpEventLog(ctx, ch, enc)
+	// Session-follow: replay then stay live emitting finish framing per terminal
+	// until the client disconnects (ctx). A follower may watch many runs/turns.
+	PumpEventLog(ctx, ch, enc, PumpSessionFollow)
 }

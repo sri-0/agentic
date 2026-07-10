@@ -69,6 +69,11 @@ func TestMemoryLogResumeAfterSeq(t *testing.T) {
 	}
 }
 
+// W1: terminal events no longer close a follow reader (runs own terminal state,
+// not sessions — a session log holds multiple turns). A follow reader closes
+// only when its ctx is cancelled. This test drives backlog → live → terminal and
+// then cancels ctx to close the stream; the terminal must still be delivered but
+// must NOT auto-close the channel (which is why we cancel to end collect()).
 func TestMemoryLogReplayThenLive(t *testing.T) {
 	l := NewMemoryLog()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -77,11 +82,13 @@ func TestMemoryLogReplayThenLive(t *testing.T) {
 	l.Append(ctx, "s", textEv("backlog2"))
 
 	ch, _ := l.Read(ctx, "s", 0, true)
-	// live appends after Read registered
+	// live appends after Read registered, then cancel to end the follow stream.
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		l.Append(ctx, "s", textEv("live3"))
-		l.Append(ctx, "s", doneEv()) // terminal closes the stream
+		l.Append(ctx, "s", doneEv()) // terminal is delivered but does NOT close
+		time.Sleep(20 * time.Millisecond)
+		cancel() // client disconnect ends the follow stream
 	}()
 	got := collect(t, ch)
 	if len(got) != 4 {
@@ -97,15 +104,33 @@ func TestMemoryLogReplayThenLive(t *testing.T) {
 	}
 }
 
-func TestMemoryLogTerminalBeforeFollowCloses(t *testing.T) {
+// W1: a follow read created AFTER a terminal event must replay the backlog
+// (including the terminal) and then stay live until ctx cancel — it must NOT
+// close just because the backlog ended in a terminal (the sticky-terminal bug
+// that broke multi-turn). A later append (a new turn) must be delivered live.
+func TestMemoryLogTerminalBeforeFollowStaysLive(t *testing.T) {
 	l := NewMemoryLog()
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	l.Append(ctx, "s", textEv("a"))
 	l.Append(ctx, "s", doneEv())
-	// follow=true but run already terminal: must replay backlog then close.
+
 	ch, _ := l.Read(ctx, "s", 0, true)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		l.Append(ctx, "s", textEv("turn2")) // a new turn appends after terminal
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
 	got := collect(t, ch)
-	if len(got) != 2 || !got[1].Event.IsTerminal() {
-		t.Fatalf("terminal-before-follow wrong: %+v", got)
+	// 2 backlog (a, done) + 1 live (turn2) = 3; proves no sticky close.
+	if len(got) != 3 {
+		t.Fatalf("want 3 events (backlog a+done, live turn2), got %d: %+v", len(got), got)
+	}
+	if !got[1].Event.IsTerminal() {
+		t.Fatalf("second event should be terminal: %+v", got[1].Event)
+	}
+	if got[2].Event.Text != "turn2" {
+		t.Fatalf("third event should be live turn2: %+v", got[2].Event)
 	}
 }

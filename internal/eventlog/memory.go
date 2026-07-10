@@ -3,6 +3,7 @@ package eventlog
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 const memSubBuffer = 512
@@ -12,17 +13,23 @@ const memSubBuffer = 512
 // best-effort: if a subscriber's buffer is full the live copy is dropped, but it
 // is never lost — a reader reconnects and replays from the backlog. This mirrors
 // the codebase's in-memory session store and needs no external services.
+//
+// Terminal state belongs to RUNS, not sessions (see W1 remediation): a session
+// log may hold many runs (multi-turn), so a terminal run-status NEVER closes a
+// live follow subscriber. Follow reads close only when their ctx is cancelled.
+// Non-follow reads close after draining the backlog. Closure policy for HTTP
+// streams lives in the pump, not here.
 type MemoryLog struct {
 	mu       sync.Mutex
 	sessions map[string]*memSession
 }
 
 type memSession struct {
-	mu       sync.Mutex
-	events   []AgentEvent // index i holds seq i+1
-	terminal bool
-	subs     map[int]chan SeqEvent
-	nextSub  int
+	mu        sync.Mutex
+	events    []AgentEvent // index i holds seq i+1
+	subs      map[int]chan SeqEvent
+	nextSub   int
+	lastTouch time.Time // last Append/Read; for idle eviction
 }
 
 // NewMemoryLog returns an in-memory EventLog.
@@ -35,7 +42,7 @@ func (m *MemoryLog) session(id string) *memSession {
 	defer m.mu.Unlock()
 	s := m.sessions[id]
 	if s == nil {
-		s = &memSession{subs: make(map[int]chan SeqEvent)}
+		s = &memSession{subs: make(map[int]chan SeqEvent), lastTouch: time.Now()}
 		m.sessions[id] = s
 	}
 	return s
@@ -47,15 +54,12 @@ func (m *MemoryLog) Append(_ context.Context, sessionID string, ev AgentEvent) (
 	s.mu.Lock()
 	s.events = append(s.events, ev)
 	seq := int64(len(s.events))
-	if ev.IsTerminal() {
-		s.terminal = true
-	}
+	s.lastTouch = time.Now()
 	se := SeqEvent{Seq: seq, Event: ev}
 	subs := make([]chan SeqEvent, 0, len(s.subs))
 	for _, ch := range s.subs {
 		subs = append(subs, ch)
 	}
-	terminal := ev.IsTerminal()
 	s.mu.Unlock()
 
 	for _, ch := range subs {
@@ -64,39 +68,44 @@ func (m *MemoryLog) Append(_ context.Context, sessionID string, ev AgentEvent) (
 		default: // live drop; durable backlog retains it for replay
 		}
 	}
-	if terminal {
-		// Wake live subscribers so they observe the terminal event in backlog
-		// even if the live copy was dropped; they re-check via the channel close.
-		s.mu.Lock()
-		for id, ch := range s.subs {
-			close(ch)
-			delete(s.subs, id)
-		}
-		s.mu.Unlock()
-	}
 	return seq, nil
 }
 
 // Read replays backlog after afterSeq, then (if follow) streams live events.
+// Terminal events do NOT close a follow reader (runs own terminal state, not
+// sessions); a follow reader closes only when ctx is cancelled. A negative
+// afterSeq is clamped to 0.
 func (m *MemoryLog) Read(ctx context.Context, sessionID string, afterSeq int64, follow bool) (<-chan SeqEvent, error) {
+	if afterSeq < 0 {
+		afterSeq = 0
+	}
 	s := m.session(sessionID)
 
-	s.mu.Lock()
-	headAtRegister := int64(len(s.events))
-	backlog := make([]AgentEvent, 0)
-	if afterSeq < headAtRegister {
-		backlog = append(backlog, s.events[afterSeq:]...)
-	}
-	terminalAtRegister := s.terminal
-	var sub chan SeqEvent
-	var subID int
-	if follow && !terminalAtRegister {
-		sub = make(chan SeqEvent, memSubBuffer)
-		subID = s.nextSub
-		s.nextSub++
-		s.subs[subID] = sub
-	}
-	s.mu.Unlock()
+	// Snapshot the backlog AND register the subscriber under a single lock hold,
+	// so no live append can slip between the two. The deferred unlock guarantees
+	// an out-of-range slice (or any panic) never leaves the mutex held — the H1
+	// poisoning bug. afterSeq is already clamped >= 0 above.
+	var (
+		backlog []AgentEvent
+		sub     chan SeqEvent
+		subID   int
+	)
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.lastTouch = time.Now()
+		headAtRegister := int64(len(s.events))
+		backlog = make([]AgentEvent, 0)
+		if afterSeq < headAtRegister {
+			backlog = append(backlog, s.events[afterSeq:]...)
+		}
+		if follow {
+			sub = make(chan SeqEvent, memSubBuffer)
+			subID = s.nextSub
+			s.nextSub++
+			s.subs[subID] = sub
+		}
+	}()
 
 	out := make(chan SeqEvent)
 	go func() {
@@ -120,21 +129,18 @@ func (m *MemoryLog) Read(ctx context.Context, sessionID string, afterSeq int64, 
 			}
 			lastSeq = seq
 		}
-		if !follow || terminalAtRegister || sub == nil {
+		if !follow || sub == nil {
 			return
 		}
-		// Live tail: sub carries events with seq > headAtRegister. Live copies
-		// may be dropped under load, so before delivering any live event we fill
-		// any gap [lastSeq+1, se.Seq) from the durable backlog — guaranteeing
-		// exactly-once, gap-free delivery to out.
+		// Live tail: sub carries events with seq > the head at register time.
+		// Live copies may be dropped under load, so before delivering any live
+		// event we fill any gap [lastSeq+1, se.Seq) from the durable backlog —
+		// guaranteeing exactly-once, gap-free delivery to out. Terminal events do
+		// NOT close the stream; only ctx cancellation does.
 		for {
 			select {
 			case se, ok := <-sub:
 				if !ok {
-					// Terminal: flush anything appended after lastSeq.
-					if !drainFrom(ctx, s, &lastSeq, out) {
-						return
-					}
 					return
 				}
 				if se.Seq <= lastSeq {
@@ -149,9 +155,6 @@ func (m *MemoryLog) Read(ctx context.Context, sessionID string, afterSeq int64, 
 					return
 				}
 				lastSeq = se.Seq
-				if se.Event.IsTerminal() {
-					return
-				}
 			case <-ctx.Done():
 				return
 			}
@@ -183,20 +186,46 @@ func replayRange(ctx context.Context, s *memSession, from, to int64, last *int64
 	return true
 }
 
-// drainFrom delivers all durable events with seq > *last, updating *last.
-func drainFrom(ctx context.Context, s *memSession, last *int64, out chan<- SeqEvent) bool {
-	s.mu.Lock()
-	head := int64(len(s.events))
-	s.mu.Unlock()
-	return replayRange(ctx, s, *last, head, last, out)
-}
-
 // Head returns the latest seq for sessionID.
 func (m *MemoryLog) Head(_ context.Context, sessionID string) (int64, error) {
 	s := m.session(sessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return int64(len(s.events)), nil
+}
+
+// Evict removes a session's log and subscribers. Safe to call for an unknown
+// session (no-op). Used by the coordinator's idle sweeper (M1) to bound growth;
+// active runs must not be evicted (the coordinator guards that).
+func (m *MemoryLog) Evict(sessionID string) {
+	m.mu.Lock()
+	s := m.sessions[sessionID]
+	delete(m.sessions, sessionID)
+	m.mu.Unlock()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	for id, ch := range s.subs {
+		close(ch)
+		delete(s.subs, id)
+	}
+	s.events = nil
+	s.mu.Unlock()
+}
+
+// IdleSince reports whether the session exists and its last activity is older
+// than the cutoff. Unknown sessions report (false).
+func (m *MemoryLog) IdleSince(sessionID string, cutoff time.Time) bool {
+	m.mu.Lock()
+	s := m.sessions[sessionID]
+	m.mu.Unlock()
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastTouch.Before(cutoff)
 }
 
 // Close is a no-op for the in-memory log.

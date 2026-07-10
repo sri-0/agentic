@@ -76,6 +76,7 @@ type AgentEvent struct {
 	Question *QuestionPayload `json:"question,omitempty"`
 	Status   string           `json:"status,omitempty"`
 	Err      string           `json:"err,omitempty"`
+	RunID    string           `json:"run_id,omitempty"` // stamped on run-status events to distinguish runs in one session log
 
 	// Progress / metadata payloads.
 	Phase   string `json:"phase,omitempty"`

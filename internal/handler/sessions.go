@@ -46,7 +46,14 @@ func SessionStream(coord *agent.Coordinator, logger zerolog.Logger) http.Handler
 
 		var afterSeq int64
 		if v := r.URL.Query().Get("after"); v != "" {
-			afterSeq, _ = strconv.ParseInt(v, 10, 64)
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n < 0 {
+				// H1: a negative/invalid after must not reach the log (it would
+				// panic on a negative slice index and poison the session mutex).
+				http.Error(w, `{"error":"invalid 'after' parameter: must be a non-negative integer"}`, http.StatusBadRequest)
+				return
+			}
+			afterSeq = n
 		}
 		format := stream.ParseFormat(r.URL.Query().Get("format"))
 

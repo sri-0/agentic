@@ -22,9 +22,12 @@ type EventLog interface {
 
 	// Read returns a channel delivering events with seq > afterSeq in order.
 	// It first replays the durable backlog, then (if follow) continues with live
-	// events until ctx is cancelled or a terminal run-status is delivered, at
-	// which point the channel is closed. With follow=false it closes after the
-	// backlog. afterSeq=0 starts from the beginning.
+	// events until ctx is cancelled, at which point the channel is closed.
+	// Terminal run-status events do NOT close a follow reader — runs own terminal
+	// state, not sessions, so one session log may carry many runs/turns; closure
+	// policy is the caller's (the pump). With follow=false it closes after the
+	// backlog. A negative afterSeq is clamped to 0; afterSeq=0 starts from the
+	// beginning.
 	Read(ctx context.Context, sessionID string, afterSeq int64, follow bool) (<-chan SeqEvent, error)
 
 	// Head returns the latest assigned seq for sessionID (0 if none).

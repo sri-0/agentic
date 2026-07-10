@@ -7,14 +7,32 @@ import (
 	"agentic/internal/stream"
 )
 
+// PumpMode selects the closure policy for PumpEventLog.
+type PumpMode int
+
+const (
+	// PumpRunAttach is used by the chat POST: the reader attaches from the run's
+	// StartSeq-1, so every event it sees belongs to THIS run. It closes the HTTP
+	// stream at the FIRST terminal run-status. This is what makes multi-turn
+	// work: turn 2 attaches after turn 1's events and only sees turn 2.
+	PumpRunAttach PumpMode = iota
+	// PumpSessionFollow is used by GET /v1/sessions/{id}/stream: it replays from
+	// the requested after, then stays live emitting SSE until the CLIENT
+	// disconnects (ctx). It emits the AI-SDK finish framing on each terminal but
+	// does NOT close the HTTP response — a follower may watch multiple runs/turns.
+	PumpSessionFollow
+)
+
 // PumpEventLog drains a SeqEvent channel (from EventLog.Read) and replays each
 // AgentEvent through a real stream.Encoder, reproducing the live wire output
 // byte-for-byte. It is the read side of the event-sourced stream: live clients
 // and reconnecting clients (via ?after=<seq>) both go through here, so the
 // rendered stream is identical whether fresh or resumed.
 //
-// It returns when the channel closes (terminal status reached) or ctx is done.
-func PumpEventLog(ctx context.Context, ch <-chan eventlog.SeqEvent, enc stream.Encoder) {
+// In PumpRunAttach mode it returns at the first terminal run-status (or ctx
+// done). In PumpSessionFollow mode it emits finish framing on each terminal but
+// keeps streaming until ctx is done.
+func PumpEventLog(ctx context.Context, ch <-chan eventlog.SeqEvent, enc stream.Encoder, mode PumpMode) {
 	enc.RunStarted()
 	var lastUsage stream.Usage
 	for {
@@ -75,11 +93,19 @@ func PumpEventLog(ctx context.Context, ch <-chan eventlog.SeqEvent, enc stream.E
 				enc.Metadata(ev.Model, ev.Author, ev.Duration)
 			case eventlog.EvQuestion:
 				enc.ToolInterrupt(interruptFromPayload(ev.Question))
-				return // pause framing; stream closes
+				if mode == PumpRunAttach {
+					return // pause framing; run-attach stream closes
+				}
 			case eventlog.EvRunStatus:
 				if ev.IsTerminal() {
 					enc.RunFinished(lastUsage)
-					return
+					if mode == PumpRunAttach {
+						return
+					}
+					// session-follow: emit finish framing but keep the HTTP
+					// response open for subsequent runs/turns; reset usage so the
+					// next run's finish reports its own totals.
+					lastUsage = stream.Usage{}
 				}
 			}
 		case <-ctx.Done():
