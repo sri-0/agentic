@@ -104,7 +104,13 @@ func PumpEventLog(ctx context.Context, ch <-chan eventlog.SeqEvent, enc stream.E
 				enc.ToolCall(int64(ev.Step), toolID(ev), toolName(ev), hitlResolvedArgs(ev))
 			case eventlog.EvRunStatus:
 				if ev.IsTerminal() {
-					enc.RunFinished(lastUsage)
+					// A failed run must render as an error, not a normal "finish"
+					// (which the UI shows as a Completed assistant message).
+					if ev.Status == eventlog.StatusError {
+						enc.RunFailed(ev.Err)
+					} else {
+						enc.RunFinished(lastUsage)
+					}
 					if mode == PumpRunAttach {
 						return
 					}

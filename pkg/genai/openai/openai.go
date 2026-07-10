@@ -24,6 +24,16 @@ import (
 
 var _ model.LLM = &Model{}
 
+// DefaultMaxOutputTokens caps the output tokens we request from the provider.
+//
+// When no max_tokens is sent, OpenRouter defaults it to the model's FULL max
+// output (e.g. 64000 for Claude Sonnet 4.5, 65536 for o3). That reservation must
+// be affordable up-front, so high-output models 402 ("requires more credits, or
+// fewer max_tokens") on accounts with modest credit — every chat fails before a
+// single token streams. We therefore always send a sane, affordable cap; a chat
+// reply almost never needs more than this, and the model still stops naturally.
+const DefaultMaxOutputTokens = 8192
+
 var (
 	ErrNoChoicesInResponse = errors.New("no choices in OpenAI response")
 )
@@ -262,9 +272,14 @@ func (m *Model) applyGenerationConfig(params *openai.ChatCompletionNewParams, cf
 	if cfg.Temperature != nil {
 		params.Temperature = openai.Float(float64(*cfg.Temperature))
 	}
-	if cfg.MaxOutputTokens > 0 {
-		params.MaxTokens = openai.Int(int64(cfg.MaxOutputTokens))
+	// Always cap output tokens. If the caller supplied a value, honour it but
+	// clamp to DefaultMaxOutputTokens; otherwise send the default so the provider
+	// does not reserve the model's full (huge) max output and 402 the request.
+	maxTokens := int64(DefaultMaxOutputTokens)
+	if cfg.MaxOutputTokens > 0 && int64(cfg.MaxOutputTokens) < maxTokens {
+		maxTokens = int64(cfg.MaxOutputTokens)
 	}
+	params.MaxTokens = openai.Int(maxTokens)
 	if cfg.TopP != nil {
 		params.TopP = openai.Float(float64(*cfg.TopP))
 	}

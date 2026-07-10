@@ -46,6 +46,10 @@ func (e *eventLogEncoder) RunStarted() {}
 
 func (e *eventLogEncoder) RunFinished(stream.Usage) {}
 
+// RunFailed is a no-op here: the terminal error run-status is appended by the
+// coordinator (terminate), and the pump maps it to enc.RunFailed on replay.
+func (e *eventLogEncoder) RunFailed(string) {}
+
 func (e *eventLogEncoder) Progress(phase, message string) {
 	e.put(eventlog.AgentEvent{Type: eventlog.EvProgress, Phase: phase, Message: message})
 }
