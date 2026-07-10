@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"agentic/internal/config"
@@ -15,6 +17,21 @@ import (
 
 	"github.com/rs/zerolog"
 )
+
+// dedupScoreThreshold is the minimum knn score (Lucene cosinesimil, which maps
+// cosine similarity to (1+cos)/2 in [0,1]) at which an incoming memory is
+// considered a near-duplicate of an existing one and skipped. ~0.97 catches
+// re-phrasings of the same fact (e.g. "Favorite programming language: Rust"
+// stored twice) without collapsing genuinely distinct facts.
+const dedupScoreThreshold = 0.97
+
+// ErrDuplicateMemory is returned by Add when the content is a near-duplicate of
+// an existing memory for the same user; the caller may treat this as a no-op.
+var ErrDuplicateMemory = fmt.Errorf("near-duplicate memory already exists")
+
+// ErrJunkMemory is returned by Add when the content is empty or a contentless
+// negative/unknown fact (e.g. "Work: NONE") that should never be persisted.
+var ErrJunkMemory = fmt.Errorf("memory content is empty or a negative/unknown fact")
 
 // Entry represents a memory document stored in OpenSearch.
 type Entry struct {
@@ -44,9 +61,35 @@ func NewService(osClient *opensearch.Client, cfg *config.Config, logger zerolog.
 }
 
 // Add stores a new memory entry, optionally embedding it for semantic search.
+//
+// Two guards run before persisting:
+//  1. Junk rejection: empty or contentless negative/unknown facts (e.g.
+//     "Work: NONE", "unknown", "N/A") are dropped — these pollute recall and
+//     can even win a targeted query. Returns ErrJunkMemory.
+//  2. Dedup: if a near-identical memory already exists for this user (knn
+//     score >= dedupScoreThreshold, or exact normalized-text match), the write
+//     is skipped so a single fact can't fragment into duplicates that crowd out
+//     distinct facts in kNN top-k. Returns ErrDuplicateMemory with the existing ID.
 func (s *Service) Add(ctx context.Context, appName, userID, content string) (string, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	content = strings.TrimSpace(content)
+	if isJunkContent(content) {
+		s.logger.Debug().Str("content", content).Msg("rejecting junk/negative memory")
+		return "", ErrJunkMemory
+	}
 
+	// Embed once; reuse the vector for both dedup detection and storage.
+	vec, embErr := rag.EmbedQuery(ctx, s.cfg, content)
+	if embErr != nil {
+		s.logger.Debug().Err(embErr).Msg("embedding unavailable, storing without vector")
+	}
+
+	// Dedup: skip if a near-duplicate already exists for this user.
+	if existingID, err := s.findDuplicate(ctx, appName, userID, content, vec); err == nil && existingID != "" {
+		s.logger.Debug().Str("content", content).Str("existing_id", existingID).Msg("skipping near-duplicate memory")
+		return existingID, ErrDuplicateMemory
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
 	doc := map[string]any{
 		"app_name":   appName,
 		"user_id":    userID,
@@ -54,12 +97,8 @@ func (s *Service) Add(ctx context.Context, appName, userID, content string) (str
 		"created_at": now,
 		"updated_at": now,
 	}
-
-	// Embed if RAG config is available
-	if vec, err := rag.EmbedQuery(ctx, s.cfg, content); err == nil {
+	if embErr == nil {
 		doc["vector"] = vec
-	} else {
-		s.logger.Debug().Err(err).Msg("embedding unavailable, storing without vector")
 	}
 
 	id, err := s.os.IndexDocument(ctx, opensearch.IndexMemories, "", doc)
@@ -67,6 +106,90 @@ func (s *Service) Add(ctx context.Context, appName, userID, content string) (str
 		return "", fmt.Errorf("index memory: %w", err)
 	}
 	return id, nil
+}
+
+// junkContentRe matches contentless negative/unknown facts whose only
+// substantive token is a placeholder like NONE/UNKNOWN/N/A/NULL/NIL. This
+// catches extractor output such as "Work: NONE" or "Favorite language - unknown"
+// while leaving real facts ("Works at Prism Group") untouched.
+var junkContentRe = regexp.MustCompile(`(?i)^(none|unknown|n/?a|null|nil|undefined)$`)
+
+// isJunkContent reports whether content should never be persisted: empty, or a
+// key:value / key - value pair whose value is a placeholder, or a bare placeholder.
+func isJunkContent(content string) bool {
+	if content == "" {
+		return true
+	}
+	// Strip a leading "key:" or "key -" label and test the remaining value.
+	value := content
+	if idx := strings.IndexAny(content, ":-"); idx >= 0 {
+		if v := strings.TrimSpace(content[idx+1:]); v != "" {
+			value = v
+		}
+	}
+	return junkContentRe.MatchString(strings.TrimSpace(value))
+}
+
+// findDuplicate returns the ID of an existing near-duplicate memory for the
+// user, or "" if none. It prefers a vector kNN match (score >= threshold) and
+// falls back to exact normalized-text equality when embeddings are unavailable.
+func (s *Service) findDuplicate(ctx context.Context, appName, userID, content string, vec []float64) (string, error) {
+	filter := []map[string]any{
+		{"term": map[string]any{"app_name": appName}},
+		{"term": map[string]any{"user_id": userID}},
+	}
+
+	if len(vec) > 0 {
+		// Filter must live inside the knn clause (Lucene engine) — see Search().
+		q := map[string]any{
+			"size": 1,
+			"query": map[string]any{
+				"knn": map[string]any{
+					"vector": map[string]any{
+						"vector": vec,
+						"k":      1,
+						"filter": map[string]any{
+							"bool": map[string]any{"filter": filter},
+						},
+					},
+				},
+			},
+		}
+		resp, err := s.os.Search(ctx, opensearch.IndexMemories, q)
+		if err == nil && len(resp.Hits.Hits) > 0 && resp.Hits.Hits[0].Score >= dedupScoreThreshold {
+			return resp.Hits.Hits[0].ID, nil
+		}
+	}
+
+	// Fallback: exact normalized-text match (handles the no-embedding path).
+	normalized := normalizeContent(content)
+	q := map[string]any{
+		"size": 1,
+		"query": map[string]any{
+			"bool": map[string]any{
+				"must": []any{
+					map[string]any{"match_phrase": map[string]any{"content": content}},
+				},
+				"filter": filter,
+			},
+		},
+	}
+	resp, err := s.os.Search(ctx, opensearch.IndexMemories, q)
+	if err != nil {
+		return "", err
+	}
+	for _, hit := range resp.Hits.Hits {
+		var e Entry
+		if json.Unmarshal(hit.Source, &e) == nil && normalizeContent(e.Content) == normalized {
+			return hit.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// normalizeContent lowercases and collapses whitespace for exact-match dedup.
+func normalizeContent(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
 // Update replaces the content of an existing memory entry.
@@ -112,23 +235,23 @@ func (s *Service) Search(ctx context.Context, appName, userID, query string, cou
 		{"term": map[string]any{"user_id": userID}},
 	}
 
-	// Try vector search first
+	// Try vector search first. The (app_name, user_id) scoping MUST live inside
+	// the knn clause as its `filter` — with the Lucene engine, a knn query nested
+	// under bool.must alongside a sibling bool.filter returns ZERO hits, which
+	// silently degraded every semantic search to the lexical text fallback below
+	// (the cause of combined-query recall missing distinct facts).
 	if vec, err := rag.EmbedQuery(ctx, s.cfg, query); err == nil {
 		q := map[string]any{
 			"size": count,
 			"query": map[string]any{
-				"bool": map[string]any{
-					"must": []any{
-						map[string]any{
-							"knn": map[string]any{
-								"vector": map[string]any{
-									"vector": vec,
-									"k":      count,
-								},
-							},
+				"knn": map[string]any{
+					"vector": map[string]any{
+						"vector": vec,
+						"k":      count,
+						"filter": map[string]any{
+							"bool": map[string]any{"filter": filter},
 						},
 					},
-					"filter": filter,
 				},
 			},
 		}

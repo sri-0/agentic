@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
 
 	"google.golang.org/adk/tool"
@@ -100,6 +101,23 @@ func NewToolset(cfg ToolsetConfig) (*Toolset, error) {
 		}
 
 		id, err := ts.svc.Add(ctx, appName, userID, args.Content)
+		if errors.Is(err, ErrDuplicateMemory) {
+			// A near-identical memory already exists; treat as a successful no-op
+			// so the agent doesn't retry and fragment the fact into duplicates.
+			return struct {
+				Success bool   `json:"success"`
+				ID      string `json:"id"`
+				Message string `json:"message"`
+			}{Success: true, ID: id, Message: "Already remembered (duplicate skipped)"}, nil
+		}
+		if errors.Is(err, ErrJunkMemory) {
+			// Empty/negative/unknown fact — nothing worth persisting.
+			return struct {
+				Success bool   `json:"success"`
+				ID      string `json:"id"`
+				Message string `json:"message"`
+			}{Success: false, Message: "Nothing to remember (empty or negative fact)"}, nil
+		}
 		if err != nil {
 			return struct {
 				Success bool   `json:"success"`

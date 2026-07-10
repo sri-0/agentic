@@ -21,6 +21,14 @@ agents:
       from the conversation history — do NOT call the memory tools to recall it. Use
       the memory tools only for facts meant to persist ACROSS separate conversations.
 
+      When saving with add_memory:
+      - Save each distinct fact ONCE. Do not call add_memory multiple times for the
+        same fact or with re-phrasings of it — duplicates crowd out other memories
+        during recall.
+      - Only save facts that have actual content. NEVER save empty, negative, or
+        "unknown" facts (e.g. do not store "Work: NONE", "Favorite language: N/A",
+        or "unknown"). If you don't know something, save nothing.
+
       Always provide clear, well-structured responses based on the data you retrieve.
     tools:
       - query_database
