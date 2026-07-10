@@ -34,7 +34,33 @@ func (s *MessageSaver) SaveUserMessage(ctx context.Context, threadID, userID, co
 		"created_at": now,
 	}
 	go func() {
-		if _, err := s.client.IndexDocument(context.Background(), opensearch.IndexMessages, uuid.New().String(), doc); err != nil {
+		bgCtx := context.Background()
+		// Ensure a thread doc exists so the conversation-history sidebar lists it
+		// and the TitleHook (which reads the thread doc) can run. The frontend
+		// generates thread_id client-side and never calls POST /v1/threads, so the
+		// chat path must upsert the thread on the first user message. Create-if-
+		// absent keyed by threadID is idempotent: it runs every user turn but only
+		// creates once, and never clobbers a title the TitleHook later sets. The
+		// initial "New Chat" title is treated as UNSET by agent.titleUnset(), so
+		// title generation still fires.
+		created, err := s.client.CreateDocumentIfAbsent(bgCtx, opensearch.IndexThreads, threadID, map[string]any{
+			"user_id":    userID,
+			"title":      "New Chat",
+			"created_at": now,
+			"updated_at": now,
+		})
+		if err != nil {
+			s.logger.Warn().Err(err).Str("thread_id", threadID).Msg("failed to ensure thread doc")
+		}
+		if !created {
+			// Thread already existed (a later turn): bump updated_at so the sidebar
+			// re-sorts this thread to the top. On first creation updated_at==now
+			// already, so only bump on subsequent turns.
+			s.client.UpdateDocument(bgCtx, opensearch.IndexThreads, threadID, map[string]any{
+				"updated_at": now,
+			})
+		}
+		if _, err := s.client.IndexDocument(bgCtx, opensearch.IndexMessages, uuid.New().String(), doc); err != nil {
 			s.logger.Warn().Err(err).Str("thread_id", threadID).Msg("failed to save user message")
 		}
 	}()

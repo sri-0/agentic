@@ -187,7 +187,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			if coord != nil {
 				agent.NonStreamAgentRunCoordinated(r.Context(), w, coord, core, threadID, UserID(r), messages, rawUserText, saver, logger)
 			} else {
-				agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
+				agent.NonStreamAgentRun(r.Context(), w, core, threadID, UserID(r), messages, saver, logger)
 			}
 		} else {
 			format := stream.ParseFormat(r.URL.Query().Get("format"))
@@ -196,7 +196,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 				// this client disconnects; reconnect via /v1/sessions/{id}/stream.
 				agent.StreamAgentRunBackground(r.Context(), w, format, coord, core, threadID, UserID(r), messages, rawUserText, saver, logger)
 			} else {
-				agent.StreamAgentRunFormat(r.Context(), w, format, core, threadID, messages, saver, logger)
+				agent.StreamAgentRunFormat(r.Context(), w, format, core, threadID, UserID(r), messages, saver, logger)
 			}
 		}
 	}
