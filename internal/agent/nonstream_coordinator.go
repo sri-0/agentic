@@ -27,11 +27,11 @@ import (
 // coalesces output text-deltas until the run's terminal run-status, mirroring the
 // projector's text rule. The connection context governs only the reader; the run
 // itself continues detached if the client disconnects.
-func NonStreamAgentRunCoordinated(ctx context.Context, w http.ResponseWriter, coord *Coordinator, core *Core, sessionID, userID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+func NonStreamAgentRunCoordinated(ctx context.Context, w http.ResponseWriter, coord *Coordinator, core *Core, sessionID, userID string, messages []types.ChatMessage, rawUserText string, saver *chat.MessageSaver, logger zerolog.Logger) {
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
 	runLog := logger.With().Str("thread_id", sessionID).Str("agent_id", core.AgentID).Logger()
 
-	h, err := coord.Start(RunRequest{SessionID: sessionID, UserID: userID, Core: core, Messages: messages, Saver: saver})
+	h, err := coord.Start(RunRequest{SessionID: sessionID, UserID: userID, Core: core, Messages: messages, RawUserText: rawUserText, Saver: saver})
 	if err != nil {
 		runLog.Error().Err(err).Msg("non-stream: coordinator start failed")
 		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)

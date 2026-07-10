@@ -141,6 +141,11 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			}
 		}
 
+		// Capture the RAW last-user text BEFORE memory recall augments it, so the
+		// persisted/reloaded user bubble is exactly what the user typed (the model
+		// still receives the augmented content). Bug B fix.
+		rawUserText := lastUserContent(messages)
+
 		// kNN long-term memory recall injection (per-user): before the agent run,
 		// pull the most relevant durable memories for this user and prepend them to
 		// the last user message so the agent has cross-session recall. No-op when
@@ -176,7 +181,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			// direct run only when no coordinator is wired. Response shape is the
 			// identical OpenAI ChatCompletion JSON either way.
 			if coord != nil {
-				agent.NonStreamAgentRunCoordinated(r.Context(), w, coord, core, threadID, UserID(r), messages, saver, logger)
+				agent.NonStreamAgentRunCoordinated(r.Context(), w, coord, core, threadID, UserID(r), messages, rawUserText, saver, logger)
 			} else {
 				agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
 			}
@@ -185,7 +190,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			if coord != nil {
 				// Background, connection-decoupled run: the run continues even if
 				// this client disconnects; reconnect via /v1/sessions/{id}/stream.
-				agent.StreamAgentRunBackground(r.Context(), w, format, coord, core, threadID, UserID(r), messages, saver, logger)
+				agent.StreamAgentRunBackground(r.Context(), w, format, coord, core, threadID, UserID(r), messages, rawUserText, saver, logger)
 			} else {
 				agent.StreamAgentRunFormat(r.Context(), w, format, core, threadID, messages, saver, logger)
 			}
@@ -261,6 +266,17 @@ func injectMemoryRecall(ctx context.Context, cfg *config.Config, osClient *opens
 	out[lastIdx] = types.ChatMessage{Role: messages[lastIdx].Role, Content: b.String()}
 	logger.Info().Int("memories", len(entries)).Msg("chat: long-term memory recall injected")
 	return out
+}
+
+// lastUserContent returns the content of the last user message, or "" if none.
+// Used to capture the raw user text before any augmentation (memory recall).
+func lastUserContent(messages []types.ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
 }
 
 func upstreamErrorText(raw []byte) string {

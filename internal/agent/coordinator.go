@@ -195,6 +195,13 @@ type RunRequest struct {
 	Messages  []types.ChatMessage
 	Saver     *chat.MessageSaver
 
+	// RawUserText, when non-empty, is the ORIGINAL user text to PERSIST for this
+	// turn (via SaveUserMessage). The model still receives the last message's
+	// (possibly augmented, e.g. memory-recall-prepended) content, but the reload
+	// history shows exactly what the user typed. Empty → persist the last message
+	// content verbatim (legacy behaviour).
+	RawUserText string
+
 	// turnKey is a test-only label used by the run seam to distinguish turns; it
 	// has no effect in production (defaultRunFunc ignores it).
 	turnKey string
@@ -310,7 +317,14 @@ func (c *Coordinator) defaultRunFunc(ctx context.Context, req RunRequest, enc *e
 	last := req.Messages[len(req.Messages)-1]
 	content := genai.NewContentFromText(last.Content, genai.RoleUser)
 	if req.Saver != nil {
-		req.Saver.SaveUserMessage(ctx, req.SessionID, last.Content)
+		// Persist the RAW user text (what the user typed), not the augmented
+		// content sent to the model (e.g. memory-recall preamble). The model still
+		// receives last.Content above; only the reload history is the raw text.
+		saveText := last.Content
+		if req.RawUserText != "" {
+			saveText = req.RawUserText
+		}
+		req.Saver.SaveUserMessage(ctx, req.SessionID, saveText)
 	}
 
 	runID := fmt.Sprintf("run-%s", uuid.New().String()[:12])

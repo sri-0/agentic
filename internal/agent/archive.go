@@ -90,18 +90,28 @@ func (a *Archiver) Flush(ctx context.Context, app, userID, sessionID string) err
 		agentEvents[i] = se.Event
 	}
 	msgs := eventlog.ProjectMessages(agentEvents)
-	now := time.Now().UTC().Format(time.RFC3339)
 	for _, m := range msgs {
 		parts, _ := json.Marshal(m.Parts)
+		// Deterministic created_at derived from the turn's first event ts, so a
+		// re-flush of an earlier turn keeps its original ordering timestamp (it must
+		// stay < the next turn's user message). Falls back to now if unset.
+		createdAt := time.Now().UTC().Format(time.RFC3339)
+		if m.TsMillis > 0 {
+			createdAt = time.UnixMilli(m.TsMillis).UTC().Format(time.RFC3339)
+		}
 		doc := map[string]any{
 			"thread_id":  sessionID,
 			"user_id":    userID,
 			"role":       m.Role,
 			"content":    m.Content,          // flattened for search / back-compat
 			"parts":      json.RawMessage(parts), // full AI-SDK parts for rehydration
-			"created_at": now,
+			"created_at": createdAt,
 		}
-		if _, err := a.os.IndexDocument(ctx, opensearch.IndexMessages, "", doc); err != nil {
+		// Deterministic _id keyed by (session, turn, role): re-flushes of a growing
+		// log UPSERT each assistant message in place (PUT _doc/{id}) instead of
+		// appending a duplicate on every run terminal.
+		docID := fmt.Sprintf("%s:%d:%s", sessionID, m.Turn, m.Role)
+		if _, err := a.os.IndexDocument(ctx, opensearch.IndexMessages, docID, doc); err != nil {
 			a.logger.Warn().Err(err).Str("session", sessionID).Msg("archive message index failed")
 		}
 	}

@@ -303,3 +303,45 @@ func partTypes(parts []Part) []string {
 	}
 	return out
 }
+
+// TestProjectMessages_TurnIndexStableAcrossReflush verifies the dedup key the
+// archive derives (session:Turn:role) is STABLE as the log grows: re-projecting
+// a two-turn log yields the same Turn for turn-1's assistant message as
+// projecting turn-1 alone did. This is what makes the deterministic OpenSearch
+// _id upsert-in-place instead of appending a duplicate (Bug A).
+func TestProjectMessages_TurnIndexStableAcrossReflush(t *testing.T) {
+	turn1 := []AgentEvent{
+		{Type: EvRunStatus, Status: StatusRunning},
+		{Type: EvTextDelta, Text: "reply one", IsOutput: true, Ts: 1000},
+		{Type: EvRunStatus, Status: StatusDone},
+	}
+	turn2 := append(append([]AgentEvent{}, turn1...),
+		AgentEvent{Type: EvRunStatus, Status: StatusRunning},
+		AgentEvent{Type: EvTextDelta, Text: "reply two", IsOutput: true, Ts: 2000},
+		AgentEvent{Type: EvRunStatus, Status: StatusDone},
+	)
+
+	first := ProjectMessages(turn1)
+	if len(first) != 1 || first[0].Turn != 0 {
+		t.Fatalf("turn-1 projection: got %d msgs, Turn=%d; want 1 msg Turn=0", len(first), first[0].Turn)
+	}
+	if first[0].TsMillis != 1000 {
+		t.Errorf("turn-1 TsMillis = %d, want 1000", first[0].TsMillis)
+	}
+
+	second := ProjectMessages(turn2)
+	if len(second) != 2 {
+		t.Fatalf("turn-2 projection: got %d msgs, want 2", len(second))
+	}
+	// Turn-1's assistant keeps Turn 0 (stable id → upsert, no dup), turn-2 is Turn 1.
+	if second[0].Turn != 0 || second[0].Content != "reply one" {
+		t.Errorf("second[0] = {Turn:%d, Content:%q}, want {0, \"reply one\"}", second[0].Turn, second[0].Content)
+	}
+	if second[1].Turn != 1 || second[1].Content != "reply two" {
+		t.Errorf("second[1] = {Turn:%d, Content:%q}, want {1, \"reply two\"}", second[1].Turn, second[1].Content)
+	}
+	// Timestamps stay pinned to each turn's first event (stable created_at ordering).
+	if second[0].TsMillis != 1000 || second[1].TsMillis != 2000 {
+		t.Errorf("TsMillis = (%d,%d), want (1000,2000)", second[0].TsMillis, second[1].TsMillis)
+	}
+}

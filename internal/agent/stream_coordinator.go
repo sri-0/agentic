@@ -28,12 +28,12 @@ func newEncoderFor(format stream.Format, sink stream.Sink, requestID, modelID, a
 // session via the coordinator, then streams the session's event log to the
 // client. The run continues even if this connection drops; a reconnecting
 // client resumes via StreamSessionAttach with ?after=<seq>.
-func StreamAgentRunBackground(ctx context.Context, w http.ResponseWriter, format stream.Format, core *Coordinator, agentCore *Core, sessionID, userID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+func StreamAgentRunBackground(ctx context.Context, w http.ResponseWriter, format stream.Format, core *Coordinator, agentCore *Core, sessionID, userID string, messages []types.ChatMessage, rawUserText string, saver *chat.MessageSaver, logger zerolog.Logger) {
 	setStreamHeaders(w, format)
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
 	enc := newEncoder(format, stream.NewSSESink(w), requestID, agentCore, sessionID)
 
-	h, err := core.Start(RunRequest{SessionID: sessionID, UserID: userID, Core: agentCore, Messages: messages, Saver: saver})
+	h, err := core.Start(RunRequest{SessionID: sessionID, UserID: userID, Core: agentCore, Messages: messages, RawUserText: rawUserText, Saver: saver})
 	if err != nil {
 		logger.Error().Err(err).Str("session", sessionID).Msg("coordinator start failed")
 		enc.RunStarted()
