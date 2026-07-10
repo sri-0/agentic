@@ -8,6 +8,7 @@ import (
 	internalagents "agentic/internal/agents"
 	"agentic/internal/config"
 	"agentic/internal/handler"
+	"agentic/internal/mcp"
 	"agentic/pkg/db/opensearch"
 	"agentic/pkg/memory"
 	oa "agentic/pkg/openapi"
@@ -19,7 +20,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all routes and middleware.
-func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, coord *agent.Coordinator, logger zerolog.Logger) *mux.Router {
+func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, coord *agent.Coordinator, mcpManager *mcp.Manager, logger zerolog.Logger) *mux.Router {
 	r := mux.NewRouter()
 
 	r.Use(corsMiddleware)
@@ -46,6 +47,14 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 		r.HandleFunc("/v1/sessions", handler.SessionsList(coord)).Methods("GET")
 		r.HandleFunc("/v1/sessions/{id}", handler.SessionStatus(coord)).Methods("GET")
 		r.HandleFunc("/v1/sessions/{id}/stream", handler.SessionStream(coord, logger)).Methods("GET")
+	}
+
+	// MCP: list configured servers with per-user status, and drive the
+	// backend-held OAuth connect/callback flow (PKCE + dynamic registration).
+	if mcpManager != nil {
+		r.HandleFunc("/v1/mcp", mcpManager.List(logger)).Methods("GET")
+		r.HandleFunc("/v1/mcp/oauth/callback", mcpManager.Callback(logger)).Methods("GET")
+		r.HandleFunc("/v1/mcp/{server}/connect", mcpManager.Connect(logger)).Methods("POST", "OPTIONS")
 	}
 
 	// Internal agent endpoints
