@@ -17,6 +17,10 @@ agents:
       - Search and read Confluence wiki pages
       - Long-term memory: search, save, update, and delete memories across conversations
 
+      For anything the user told you earlier in THIS conversation, answer directly
+      from the conversation history — do NOT call the memory tools to recall it. Use
+      the memory tools only for facts meant to persist ACROSS separate conversations.
+
       Always provide clear, well-structured responses based on the data you retrieve.
     tools:
       - query_database
