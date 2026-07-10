@@ -91,7 +91,7 @@ func NewManager(cfg *config.MCPConfig, redirectURL string, logger zerolog.Logger
 			logger.Warn().Err(err).Str("server", name).Msg("mcp: toolset build failed")
 			continue
 		}
-		m.toolsets[name] = ts
+		m.toolsets[name] = &resilientToolset{name: name, inner: ts, logger: logger}
 		m.baseline[name] = StatusConnected
 		logger.Info().Str("server", name).Str("type", sc.Type).Bool("oauth", sc.OAuth).Msg("mcp: server registered")
 	}
