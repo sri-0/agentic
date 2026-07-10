@@ -92,7 +92,7 @@ func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format str
 
 	// Persist user message
 	if saver != nil {
-		saver.SaveUserMessage(ctx, threadID, lastMsg.Content)
+		saver.SaveUserMessage(ctx, threadID, "", lastMsg.Content)
 	}
 
 	streamEvents(ctx, enc, core, threadID, requestID, userContent, saver, logger)

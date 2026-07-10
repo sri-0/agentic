@@ -324,7 +324,7 @@ func (c *Coordinator) defaultRunFunc(ctx context.Context, req RunRequest, enc *e
 		if req.RawUserText != "" {
 			saveText = req.RawUserText
 		}
-		req.Saver.SaveUserMessage(ctx, req.SessionID, saveText)
+		req.Saver.SaveUserMessage(ctx, req.SessionID, req.UserID, saveText)
 	}
 
 	runID := fmt.Sprintf("run-%s", uuid.New().String()[:12])
