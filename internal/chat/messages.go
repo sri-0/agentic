@@ -21,13 +21,14 @@ func NewMessageSaver(client *opensearch.Client, logger zerolog.Logger) *MessageS
 	return &MessageSaver{client: client, logger: logger}
 }
 
-func (s *MessageSaver) SaveUserMessage(ctx context.Context, threadID, content string) {
+func (s *MessageSaver) SaveUserMessage(ctx context.Context, threadID, userID, content string) {
 	if s.client == nil {
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	doc := map[string]any{
 		"thread_id":  threadID,
+		"user_id":    userID, // required: GET /v1/threads/{id}/messages scopes by user_id
 		"role":       "user",
 		"content":    content,
 		"created_at": now,

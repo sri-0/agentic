@@ -36,7 +36,7 @@ func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, t
 
 	// Persist user message
 	if saver != nil {
-		saver.SaveUserMessage(ctx, threadID, lastMsg.Content)
+		saver.SaveUserMessage(ctx, threadID, "", lastMsg.Content)
 	}
 
 	var textContent string
