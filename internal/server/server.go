@@ -38,14 +38,16 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, agentConfigs, buildOverrideCore, coord, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/messages", handler.Messages(cfg, logger)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, logger)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, coord, logger)).Methods("POST", "OPTIONS")
 
-	// Server-side sessions: list still-running sessions, check status, and
-	// attach/resume a session's event stream (?after=<seq> for exactly-once resume).
+	// Server-side sessions: list still-running sessions, check status, attach/
+	// resume a session's event stream (?after=<seq> for exactly-once resume), and
+	// cancel a running session.
 	if coord != nil {
 		r.HandleFunc("/v1/sessions", handler.SessionsList(coord)).Methods("GET")
 		r.HandleFunc("/v1/sessions/{id}", handler.SessionStatus(coord)).Methods("GET")
 		r.HandleFunc("/v1/sessions/{id}/stream", handler.SessionStream(coord, logger)).Methods("GET")
+		r.HandleFunc("/v1/sessions/{id}/cancel", handler.SessionCancel(coord, logger)).Methods("POST", "OPTIONS")
 	}
 
 	// Internal agent endpoints

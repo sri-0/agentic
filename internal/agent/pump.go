@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 
 	"agentic/internal/eventlog"
 	"agentic/internal/stream"
@@ -96,6 +97,11 @@ func PumpEventLog(ctx context.Context, ch <-chan eventlog.SeqEvent, enc stream.E
 				if mode == PumpRunAttach {
 					return // pause framing; run-attach stream closes
 				}
+			case eventlog.EvHITLResolved:
+				// M3: re-surface the originating tool call so a fresh reader sees
+				// the tool_call before its result on the resumed run — mirrors the
+				// sync resume path (stream.go) which emitted a real ToolCall here.
+				enc.ToolCall(int64(ev.Step), toolID(ev), toolName(ev), hitlResolvedArgs(ev))
 			case eventlog.EvRunStatus:
 				if ev.IsTerminal() {
 					enc.RunFinished(lastUsage)
@@ -133,6 +139,24 @@ func toolArgs(ev eventlog.AgentEvent) string {
 		}
 	}
 	return ""
+}
+
+// hitlResolvedArgs renders the re-surfaced tool call's args. Unlike normal
+// tool-call events (which store args as a pre-marshalled JSON string), the
+// EvHITLResolved event carries the original tool args as a structured map
+// (pending.Details), so it is marshalled here to match the sync resume path.
+func hitlResolvedArgs(ev eventlog.AgentEvent) string {
+	if ev.Tool == nil || ev.Tool.Args == nil {
+		return ""
+	}
+	if s, ok := ev.Tool.Args.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(ev.Tool.Args)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 func toolResult(ev eventlog.AgentEvent) any {
 	if ev.Tool != nil {

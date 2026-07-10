@@ -140,6 +140,12 @@ type RunRequest struct {
 // run-attach reader can attach from StartSeq-1 and only see this turn's events.
 func (c *Coordinator) Start(req RunRequest) (*RunHandle, error) {
 	c.mu.Lock()
+	// H2: a session last-known to belong to another user cannot be started/
+	// continued by this user.
+	if h, ok := c.known[req.SessionID]; ok && req.UserID != "" && h.UserID != "" && h.UserID != req.UserID {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("session %s is owned by another user", req.SessionID)
+	}
 	if h, ok := c.active[req.SessionID]; ok && (h.Status == RunRunning || h.Status == RunQueued) {
 		// A run is active — queue this turn, do not drop it.
 		c.pending[req.SessionID] = append(c.pending[req.SessionID], req)
@@ -296,9 +302,19 @@ func (c *Coordinator) dequeueLocked(sessionID string) (RunRequest, bool) {
 
 // Resume continues a suspended (awaiting-input) run after a HITL/question reply,
 // appending to the same session log so attached and reconnecting clients see a
-// seamless continuation.
-func (c *Coordinator) Resume(core *Core, sessionID, userID string, pending *hitl.PendingInterrupt, approved bool) (*RunHandle, error) {
+// seamless continuation. answers (one selected-label list per question) and text
+// (optional free-text) ride the ADK confirmation payload so the question tool can
+// surface them to the model; they are empty for a plain HITL approve/deny.
+//
+// Ownership is enforced: a session last-known to belong to a different user is
+// rejected (H2). The returned handle's StartSeq lets the caller run-attach from
+// StartSeq-1 so the continuation both streams and is recorded (C4).
+func (c *Coordinator) Resume(core *Core, sessionID, userID string, pending *hitl.PendingInterrupt, approved bool, answers [][]string, text string) (*RunHandle, error) {
 	c.mu.Lock()
+	if h, ok := c.known[sessionID]; ok && userID != "" && h.UserID != "" && h.UserID != userID {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("session %s is owned by another user", sessionID)
+	}
 	if h, ok := c.active[sessionID]; ok && (h.Status == RunRunning || h.Status == RunQueued) {
 		c.mu.Unlock()
 		return h, fmt.Errorf("run already active for session %s", sessionID)
@@ -323,10 +339,15 @@ func (c *Coordinator) Resume(core *Core, sessionID, userID string, pending *hitl
 		enc.put(eventlog.AgentEvent{V: 1, Type: eventlog.EvHITLResolved,
 			Tool: &eventlog.ToolPayload{ID: pending.ToolCallID, Name: pending.ToolName, Args: pending.Details}})
 
+		// Build the confirmation FunctionResponse. ADK marshals Response to JSON
+		// then unmarshals it into toolconfirmation.ToolConfirmation{Confirmed,
+		// Payload} (see request_confirmation_processor.go), so "confirmed" →
+		// .Confirmed and "payload" → .Payload. The question tool reads .Payload
+		// via ctx.ToolConfirmation() and returns the answers to the model (C3).
 		funcResponse := &genai.FunctionResponse{
 			Name:     toolconfirmation.FunctionCallName,
 			ID:       pending.ConfirmationCallID,
-			Response: map[string]any{"confirmed": approved},
+			Response: buildConfirmationResponse(approved, answers, text),
 		}
 		confirmContent := &genai.Content{Role: string(genai.RoleUser), Parts: []*genai.Part{{FunctionResponse: funcResponse}}}
 
@@ -388,6 +409,37 @@ func (c *Coordinator) Cancel(sessionID string) bool {
 
 	c.terminate(context.Background(), sessionID, h, h.RunID, runOutcome{status: RunCancelled})
 	return true
+}
+
+// Confirmation payload keys. These are the JSON keys inside the ADK
+// FunctionResponse Response map. "confirmed" and "payload" are consumed by ADK
+// (→ ToolConfirmation.Confirmed / .Payload); the question tool reads the answers
+// out of .Payload by the same key names, so they are shared here to keep the
+// encode (Resume) and decode (questionHandler) sides in lockstep.
+const (
+	confirmKeyConfirmed = "confirmed"
+	confirmKeyPayload   = "payload"
+	confirmKeyAnswers   = "answers"
+	confirmKeyText      = "text"
+)
+
+// buildConfirmationResponse produces the ADK FunctionResponse Response map. The
+// answers/text are nested under "payload" so they land on
+// ToolConfirmation.Payload after ADK's JSON round-trip. When there are no
+// answers (plain HITL approve/deny) the payload is omitted entirely.
+func buildConfirmationResponse(approved bool, answers [][]string, text string) map[string]any {
+	resp := map[string]any{confirmKeyConfirmed: approved}
+	if len(answers) > 0 || text != "" {
+		payload := map[string]any{}
+		if len(answers) > 0 {
+			payload[confirmKeyAnswers] = answers
+		}
+		if text != "" {
+			payload[confirmKeyText] = text
+		}
+		resp[confirmKeyPayload] = payload
+	}
+	return resp
 }
 
 func newRunID() string { return fmt.Sprintf("run-%s", uuid.New().String()[:12]) }

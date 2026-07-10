@@ -57,11 +57,36 @@ func SessionStream(coord *agent.Coordinator, logger zerolog.Logger) http.Handler
 		}
 		format := stream.ParseFormat(r.URL.Query().Get("format"))
 
-		agentID := ""
-		if h, ok := coord.Status(userID, sessionID); ok {
-			agentID = h.AgentID
+		// H2: only attach if this session is known AND owned by the requesting
+		// user. A miss (unknown id or wrong owner) is a 404 — never stream another
+		// user's log. 404 (not 403) avoids leaking session existence.
+		h, ok := coord.Status(userID, sessionID)
+		if !ok {
+			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+			return
 		}
-		agent.StreamSessionAttach(r.Context(), w, format, coord, sessionID, "", agentID, afterSeq, logger)
+		agent.StreamSessionAttach(r.Context(), w, format, coord, sessionID, "", h.AgentID, afterSeq, logger)
+	}
+}
+
+// SessionCancel stops an active run for a session the requesting user owns
+// (POST /v1/sessions/{id}/cancel). Ownership is checked before cancelling so a
+// user cannot cancel another user's run (H2). Cancel routes through the
+// coordinator's once-guarded terminate path so the terminal is idempotent.
+func SessionCancel(coord *agent.Coordinator, logger zerolog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := UserID(r)
+		sessionID := mux.Vars(r)["id"]
+
+		// Ownership gate: 404 unless this session is known and owned by the user.
+		if _, ok := coord.Status(userID, sessionID); !ok {
+			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+			return
+		}
+
+		cancelled := coord.Cancel(sessionID)
+		logger.Info().Str("session", sessionID).Str("user_id", userID).Bool("cancelled", cancelled).Msg("session cancel requested")
+		writeJSON(w, map[string]any{"session_id": sessionID, "cancelled": cancelled, "status": "cancelled"})
 	}
 }
 

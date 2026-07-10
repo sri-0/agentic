@@ -34,14 +34,16 @@ func (e *eventLogEncoder) put(ev eventlog.AgentEvent) {
 	_, _ = e.log.Append(e.ctx, e.sessionID, ev)
 }
 
-// Lifecycle. RunStarted framing is owned by the pump; RunFinished's usage is
-// carried as a final usage event, and the coordinator appends the terminal
-// run-status separately.
+// Lifecycle. RunStarted framing is owned by the pump; the coordinator appends
+// the terminal run-status separately.
+//
+// M3: RunFinished does NOT re-emit usage. Usage is already carried by the
+// Usage() encoder call as its own EvUsage event, which the pump replays and
+// tracks as lastUsage before emitting the terminal RunFinished framing. Emitting
+// a second EvUsage here double-counted token usage on replay.
 func (e *eventLogEncoder) RunStarted() {}
 
-func (e *eventLogEncoder) RunFinished(u stream.Usage) {
-	e.put(eventlog.AgentEvent{Type: eventlog.EvUsage, Usage: usagePayload(u, nil), IsOutput: true})
-}
+func (e *eventLogEncoder) RunFinished(stream.Usage) {}
 
 func (e *eventLogEncoder) Progress(phase, message string) {
 	e.put(eventlog.AgentEvent{Type: eventlog.EvProgress, Phase: phase, Message: message})
@@ -117,10 +119,31 @@ func (e *eventLogEncoder) Usage(u stream.Usage, breakdown []stream.Bucket) {
 
 func (e *eventLogEncoder) ToolInterrupt(i stream.Interrupt) {
 	e.interrupted = true
-	e.put(eventlog.AgentEvent{Type: eventlog.EvQuestion, Question: &eventlog.QuestionPayload{
+	q := &eventlog.QuestionPayload{
 		ToolCallID: i.ToolCallID, ToolName: i.ToolName, Prompt: i.Prompt,
 		Details: map[string]any{"details": i.Details, "thread_id": i.ThreadID},
-	}})
+	}
+	// M3: populate the structured Questions field for the question tool so the UI
+	// can render a real question card (options/multiselect/free-text) rather than
+	// only a generic approve/deny from Details. The tool args are the question
+	// schema (a {"questions": [...]} map); surface that list verbatim.
+	q.Questions = extractQuestions(i.Details)
+	e.put(eventlog.AgentEvent{Type: eventlog.EvQuestion, Question: q})
+}
+
+// extractQuestions pulls the "questions" list out of the interrupt details when
+// the interrupt originated from the question tool. Details is the tool's
+// original call args (map[string]any); other tools (HITL confirmations) have no
+// "questions" key, so this returns nil for them.
+func extractQuestions(details any) []any {
+	m, ok := details.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if qs, ok := m["questions"].([]any); ok {
+		return qs
+	}
+	return nil
 }
 
 func (e *eventLogEncoder) Metadata(model, agentID string, durationMs int64) {
