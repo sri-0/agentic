@@ -20,8 +20,38 @@ pip install -r requirements.txt
 OFFICE_OUTPUT_DIR=./out OFFICE_BASE_URL=http://localhost:8090/files python server.py
 ```
 
-Serves MCP on `:8090/mcp`. Put branded `.docx`/`.potx` templates in
+Serves MCP on `:8090/mcp` **and** the generated files on `:8090/files/<name>`
+(same port — see below). Put branded `.docx`/`.potx` templates in
 `OFFICE_TEMPLATE_DIR` (default `./templates`).
+
+## File serving (`/files`)
+
+Tools return a URL like `OFFICE_BASE_URL/<name>.docx`. The server mounts a
+`/files/{filename}` route on the same FastMCP Starlette app that
+`mcp.run(transport="streamable-http")` serves, so `/mcp` and `/files/<name>`
+share one port (before this, every returned link 404'd — finding N1). The route
+serves files from `OFFICE_OUTPUT_DIR` with path-traversal protection (bad/`..`
+names → 400/404). Set `OFFICE_BASE_URL` so the returned URLs match how the
+gateway/browser reach this host.
+
+Verify:
+
+```bash
+curl -s -o out.docx -w '%{http_code}\n' http://localhost:8090/files/<name>.docx  # 200
+```
+
+## Default docx template
+
+`render_report_docx(template, context)` accepts a template filename under
+`OFFICE_TEMPLATE_DIR`. Pass an **empty string** to use the built-in default
+`report.docx` (placeholders `{{ title }}`, `{{ author }}`, `{{ date }}`,
+`{{ summary }}` and a `{% for s in sections %}` loop over `{heading, body}`).
+The template is authored programmatically by `make_template.py` (python-docx)
+and committed at `templates/report.docx`; regenerate or rebrand with:
+
+```bash
+./.venv/bin/python make_template.py   # writes ./templates/report.docx
+```
 
 ## Register with the gateway
 

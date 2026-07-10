@@ -135,6 +135,9 @@ type Result struct {
 	SessionMemory *internalmemory.SessionMemory
 	// Compaction service (context window management)
 	Compaction *internalmemory.CompactionService
+	// MCPManager holds the MCP client toolsets + backend-held OAuth for the
+	// connect/callback/list routes.
+	MCPManager *mcp.Manager
 }
 
 // Init loads config, connects to OpenSearch, and builds all agents from
@@ -247,7 +250,10 @@ func Init(ctx context.Context) (*Result, error) {
 		logger.Warn().Err(err).Msg("mcp.yaml failed to load")
 		mcpCfg = &config.MCPConfig{}
 	}
-	mcpManager := mcp.NewManager(mcpCfg, logger)
+	// redirectURL is derived per-request in the connect handler from the incoming
+	// Host, so the provider default here is only a fallback (env override
+	// optional). Leaving empty is fine.
+	mcpManager := mcp.NewManager(mcpCfg, os.Getenv("MCP_OAUTH_REDIRECT_URL"), logger)
 	deps.MCPToolsets = mcpManager.Toolsets
 
 	sessionService, err := agent.NewSessionService(cfg, logger)
@@ -417,5 +423,6 @@ func Init(ctx context.Context) (*Result, error) {
 		PromptStore:    promptStore,
 		SessionMemory:  sessionMem,
 		Compaction:     compactionSvc,
+		MCPManager:     mcpManager,
 	}, nil
 }
