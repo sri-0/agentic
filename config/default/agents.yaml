@@ -271,7 +271,7 @@ agents:
 
   - id: dr-data-analyst
     internal: true
-    name: dr_data_analyst
+    name: data_analyst
     description: Queries databases for supporting quantitative data related to the document
     model: gpt-oss-120b
     provider: openrouter
@@ -310,7 +310,7 @@ agents:
 
   - id: dr-gap-analyst
     internal: true
-    name: dr_gap_analyst
+    name: gap_analyst
     description: Identifies gaps between research plan and accumulated findings
     model: gpt-oss-120b
     provider: openrouter
