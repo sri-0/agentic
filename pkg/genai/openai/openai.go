@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"iter"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -33,6 +35,22 @@ var _ model.LLM = &Model{}
 // single token streams. We therefore always send a sane, affordable cap; a chat
 // reply almost never needs more than this, and the model still stops naturally.
 const DefaultMaxOutputTokens = 8192
+
+// effectiveMaxOutputTokens is the cap actually applied. It defaults to
+// DefaultMaxOutputTokens but can be lowered via the MAX_OUTPUT_TOKENS env var,
+// so a cost- or balance-constrained deployment can request fewer tokens per call
+// (e.g. when the provider account can only afford a small up-front reservation).
+var effectiveMaxOutputTokens = func() int64 {
+	if v := os.Getenv("MAX_OUTPUT_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return int64(n)
+		}
+	}
+	return DefaultMaxOutputTokens
+}()
+
+// MaxOutputTokens returns the effective output-token cap (env-overridable).
+func MaxOutputTokens() int64 { return effectiveMaxOutputTokens }
 
 var (
 	ErrNoChoicesInResponse = errors.New("no choices in OpenAI response")
@@ -275,7 +293,7 @@ func (m *Model) applyGenerationConfig(params *openai.ChatCompletionNewParams, cf
 	// Always cap output tokens. If the caller supplied a value, honour it but
 	// clamp to DefaultMaxOutputTokens; otherwise send the default so the provider
 	// does not reserve the model's full (huge) max output and 402 the request.
-	maxTokens := int64(DefaultMaxOutputTokens)
+	maxTokens := effectiveMaxOutputTokens
 	if cfg.MaxOutputTokens > 0 && int64(cfg.MaxOutputTokens) < maxTokens {
 		maxTokens = int64(cfg.MaxOutputTokens)
 	}
