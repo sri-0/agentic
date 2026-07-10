@@ -165,22 +165,6 @@ providers:
           tokenizer: o200k_base
           instruct_type: none
 
-      - id: openai/o4-mini
-        type: llm
-        name: o4 Mini
-        owned_by: openai
-        description: Latest compact reasoning model.
-        released_at: 2025-04-16
-        context_length: 200000
-        capabilities: [tool_calling, vision, reasoning, streaming]
-        supported_parameters: [max_tokens, temperature, reasoning_effort]
-        architecture:
-          input_modalities: [text, image]
-          output_modalities: [text]
-          tokenizer: o200k_base
-          instruct_type: none
-
-      # ── Anthropic ───────────────────────────────────────────────────────
       - id: anthropic/claude-sonnet-4
         type: llm
         name: Claude Sonnet 4
@@ -329,20 +313,6 @@ providers:
         owned_by: meta
         description: Strong open-weight model for general tasks.
         released_at: 2024-12-06
-        context_length: 131072
-        capabilities: [tool_calling, streaming]
-        architecture:
-          input_modalities: [text]
-          output_modalities: [text]
-          tokenizer: llama3
-          instruct_type: llama3
-
-      - id: meta-llama/llama-3.3-70b-instruct
-        type: llm
-        name: Llama 3.3 70B Instruct
-        owned_by: meta
-        description: Largest open-weight Llama model.
-        released_at: 2024-07-23
         context_length: 131072
         capabilities: [tool_calling, streaming]
         architecture:
@@ -652,21 +622,6 @@ providers:
           tokenizer: phi
           instruct_type: chatml
 
-      - id: microsoft/phi-4
-        type: llm
-        name: Phi-4
-        owned_by: microsoft
-        description: Microsoft's distilled reasoning model based on DeepSeek R1.
-        released_at: 2025-04-21
-        context_length: 131072
-        capabilities: [reasoning, streaming]
-        architecture:
-          input_modalities: [text]
-          output_modalities: [text]
-          tokenizer: deepseek
-          instruct_type: deepseek
-
-      # ── Embedding Models ──────────────────────────────────────────────
       - id: intfloat/multilingual-e5-large
         type: embedding
         name: Multilingual E5 Large
