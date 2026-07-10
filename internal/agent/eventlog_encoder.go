@@ -18,7 +18,8 @@ type eventLogEncoder struct {
 	ctx         context.Context
 	log         eventlog.EventLog
 	sessionID   string
-	interrupted bool // set when the run paused on a HITL/question interrupt
+	interrupted bool                    // set when the run paused on a HITL/question interrupt
+	taskBoards  eventlog.TaskBoardStore // optional: current-board cache (Task 4)
 }
 
 // Interrupted reports whether the run suspended on a tool interrupt (HITL /
@@ -111,6 +112,11 @@ func (e *eventLogEncoder) TaskList(tasks []stream.Task) {
 		items[i] = eventlog.TaskItem{ID: t.ID, Title: t.Title, Status: t.Status, Priority: t.Priority, Agent: t.Agent}
 	}
 	e.put(eventlog.AgentEvent{Type: eventlog.EvTaskList, Tasks: items})
+	// Task 4: cache the current board to the per-session task-state store (Redis,
+	// or in-memory fallback) so a reconnect can show it without replaying the log.
+	if e.taskBoards != nil {
+		_ = e.taskBoards.Set(e.ctx, e.sessionID, items)
+	}
 }
 
 func (e *eventLogEncoder) Usage(u stream.Usage, breakdown []stream.Bucket) {

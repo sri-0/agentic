@@ -49,6 +49,10 @@ type RunHandle struct {
 
 	cancel   context.CancelFunc
 	termOnce *sync.Once // guards the single terminal append + status set per run
+
+	// captured for post-run hooks (archive/memory/title); not serialised.
+	core     *Core
+	messages []types.ChatMessage
 }
 
 // runOutcome is the terminal result of a run function, mapped by the coordinator
@@ -89,6 +93,72 @@ type Coordinator struct {
 		IdleSince(string, time.Time) bool
 	}
 	stopSweep chan struct{}
+
+	hooks      []PostRunHook           // fired async on every run terminal
+	taskBoards eventlog.TaskBoardStore // per-session current-board cache (Task 4)
+}
+
+// SetTaskBoardStore attaches a per-session task-board cache (Redis, or in-memory
+// fallback). Call during bootstrap wiring; the encoder writes the current board
+// on each task-list snapshot so a reconnect can render it without a full replay.
+func (c *Coordinator) SetTaskBoardStore(s eventlog.TaskBoardStore) { c.taskBoards = s }
+
+// TaskBoard returns the current task board snapshot for a session (empty if none
+// or no store wired).
+func (c *Coordinator) TaskBoard(ctx context.Context, sessionID string) []eventlog.TaskItem {
+	if c.taskBoards == nil {
+		return nil
+	}
+	items, _ := c.taskBoards.Get(ctx, sessionID)
+	return items
+}
+
+// PostRunInfo is the context passed to a PostRunHook when a run reaches a
+// terminal status. It carries enough to fire async side-effects (archive flush,
+// memory extraction, auto-title, compaction) without holding the coordinator.
+type PostRunInfo struct {
+	SessionID string
+	UserID    string
+	AgentID   string
+	RunID     string
+	Status    RunStatus
+	Core      *Core
+	Messages  []types.ChatMessage // the turn's input messages (may be empty on resume)
+}
+
+// PostRunHook is a side-effect fired (non-blocking, async) exactly once per run
+// terminal. Hooks must not block; the coordinator invokes each in its own
+// goroutine. Registered via AddPostRunHook, they replace hardcoded post-run
+// wiring so archive/memory/title concerns stay out of the run lifecycle.
+type PostRunHook func(PostRunInfo)
+
+// AddPostRunHook registers a post-run hook. Not safe to call concurrently with
+// active runs; call during bootstrap wiring.
+func (c *Coordinator) AddPostRunHook(h PostRunHook) {
+	if h == nil {
+		return
+	}
+	c.hooks = append(c.hooks, h)
+}
+
+// firePostRun invokes every registered hook in its own goroutine (non-blocking).
+// Only fired on a hard terminal (done/error/cancelled), never on awaiting-input
+// (the run is suspended, not finished).
+func (c *Coordinator) firePostRun(info PostRunInfo) {
+	if info.Status == RunAwaitingInput {
+		return
+	}
+	for _, h := range c.hooks {
+		h := h
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error().Interface("panic", r).Str("session", info.SessionID).Msg("post-run hook panicked")
+				}
+			}()
+			h(info)
+		}()
+	}
 }
 
 // NewCoordinator constructs a run coordinator over the given EventLog.
@@ -185,6 +255,8 @@ func (c *Coordinator) startLocked(req RunRequest) *RunHandle {
 		StartedAt: c.now(),
 		UpdatedAt: c.now(),
 		cancel:    cancel,
+		core:      req.Core,
+		messages:  req.Messages,
 	}
 	h.termOnce = &sync.Once{}
 	c.active[req.SessionID] = h
@@ -208,6 +280,7 @@ func (c *Coordinator) headLocked(sessionID string) int64 {
 
 func (c *Coordinator) run(ctx context.Context, req RunRequest, h *RunHandle, runID string) {
 	enc := newEventLogEncoder(ctx, c.log, req.SessionID)
+	enc.taskBoards = c.taskBoards
 
 	outcome := c.runFn(ctx, req, enc)
 	// HITL interrupt takes precedence over the run function's nominal outcome.
@@ -241,7 +314,13 @@ func (c *Coordinator) defaultRunFunc(ctx context.Context, req RunRequest, enc *e
 	}
 
 	runID := fmt.Sprintf("run-%s", uuid.New().String()[:12])
-	if err := streamEvents(ctx, enc, core, req.SessionID, runID, content, req.Saver, c.logger); err != nil {
+	// The assistant message is persisted by the archive post-run hook with FULL
+	// PARTS (projected from the event log), so streamEvents is given a nil saver
+	// here to avoid a duplicate text-only assistant row. The user message is
+	// already saved above. Assistant-message persistence requires OpenSearch, and
+	// the archive hook (which also requires OpenSearch) owns it — so there is no
+	// persistence gap when the store is absent (both are no-ops).
+	if err := streamEvents(ctx, enc, core, req.SessionID, runID, content, nil, c.logger); err != nil {
 		return runOutcome{status: RunError, err: err.Error()}
 	}
 	return runOutcome{status: RunDone}
@@ -281,6 +360,18 @@ func (c *Coordinator) terminate(ctx context.Context, sessionID string, h *RunHan
 		if h.cancel != nil {
 			h.cancel()
 		}
+		// Fire post-run hooks (archive flush, memory extraction, auto-title,
+		// compaction) async, exactly once per run terminal. awaiting-input is not
+		// a terminal for this purpose (firePostRun filters it).
+		c.firePostRun(PostRunInfo{
+			SessionID: sessionID,
+			UserID:    h.UserID,
+			AgentID:   h.AgentID,
+			RunID:     runID,
+			Status:    outcome.status,
+			Core:      h.core,
+			Messages:  h.messages,
+		})
 	})
 }
 
@@ -322,7 +413,7 @@ func (c *Coordinator) Resume(core *Core, sessionID, userID string, pending *hitl
 	runCtx, cancel := context.WithCancel(context.Background())
 	runID := newRunID()
 	startSeq := c.headLocked(sessionID) + 1
-	h := &RunHandle{SessionID: sessionID, UserID: userID, AgentID: core.AgentID, RunID: runID, Status: RunRunning, StartSeq: startSeq, StartedAt: c.now(), UpdatedAt: c.now(), cancel: cancel}
+	h := &RunHandle{SessionID: sessionID, UserID: userID, AgentID: core.AgentID, RunID: runID, Status: RunRunning, StartSeq: startSeq, StartedAt: c.now(), UpdatedAt: c.now(), cancel: cancel, core: core}
 	h.termOnce = &sync.Once{} // required: finish()/Cancel route through terminate() which calls termOnce.Do
 	c.active[sessionID] = h
 	c.known[sessionID] = h
@@ -335,6 +426,7 @@ func (c *Coordinator) Resume(core *Core, sessionID, userID string, pending *hitl
 
 	go func() {
 		enc := newEventLogEncoder(runCtx, c.log, sessionID)
+		enc.taskBoards = c.taskBoards
 		// Re-surface the tool call so a fresh reader sees it before the result.
 		enc.put(eventlog.AgentEvent{V: 1, Type: eventlog.EvHITLResolved,
 			Tool: &eventlog.ToolPayload{ID: pending.ToolCallID, Name: pending.ToolName, Args: pending.Details}})

@@ -264,7 +264,18 @@ func Init(ctx context.Context) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("event log: %w", err)
 	}
-	runCoordinator := agent.NewCoordinator(eventLog, logger)
+
+	// W4: the archiver flushes terminated sessions to the OpenSearch cold archive
+	// and also serves as the ColdStore for composite reads. A CompositeLog serves
+	// live/hot reads from the hot event log and falls back to the cold archive for
+	// non-follow history once the hot (Redis) window expires. Appends and live
+	// follow stay hot-only (CompositeLog embeds the hot log). Both degrade to the
+	// hot log alone when OpenSearch is nil.
+	archiver := agent.NewArchiver(osClient, eventLog, cfg.AppName, logger)
+	compositeLog := eventlog.NewCompositeLog(eventLog, archiver)
+	runCoordinator := agent.NewCoordinator(compositeLog, logger)
+	// Task 4: per-session task board cache (Redis when configured, else in-memory).
+	runCoordinator.SetTaskBoardStore(agent.NewTaskBoardStore(cfg, logger))
 
 	// Swarm dispatch: the task tool runs a chosen subagent (from the typed
 	// registry) as a child session via its own Runner, streaming the child's
@@ -378,6 +389,16 @@ func Init(ctx context.Context) (*Result, error) {
 		compactionSvc = internalmemory.NewCompactionService(promptStore, internalReg, sessionService, logger)
 		logger.Info().Msg("compaction service ready")
 	}
+
+	// W4 post-run hooks: archive flush (durable session_events + full-parts
+	// messages), long-term memory extraction, and auto-titles. Each fires async,
+	// non-blocking, exactly once per run terminal. All degrade to no-ops when
+	// their store/registry is nil, so the in-memory default path is unaffected.
+	runCoordinator.AddPostRunHook(agent.ArchiveHook(archiver, cfg.AppName))
+	runCoordinator.AddPostRunHook(agent.MemoryExtractorHook(internalReg, sessionService, memorySvc, cfg.AppName, logger))
+	runCoordinator.AddPostRunHook(agent.TitleHook(internalReg, sessionService, osClient, logger))
+	runCoordinator.AddPostRunHook(agent.CompactionTriggerHook(eventLog, 0, logger))
+	logger.Info().Msg("W4 post-run hooks registered (archive, memory-extractor, title, compaction-trigger)")
 
 	return &Result{
 		Cfg:            cfg,

@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"agentic/internal/agent"
 	"agentic/internal/chat"
@@ -15,6 +17,7 @@ import (
 	"agentic/internal/stream/aisdk"
 	"agentic/internal/types"
 	"agentic/pkg/db/opensearch"
+	pkgmemory "agentic/pkg/memory"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -138,6 +141,12 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			}
 		}
 
+		// kNN long-term memory recall injection (per-user): before the agent run,
+		// pull the most relevant durable memories for this user and prepend them to
+		// the last user message so the agent has cross-session recall. No-op when
+		// OpenSearch is absent or nothing is recalled (degradation-safe).
+		messages = injectMemoryRecall(r.Context(), cfg, osClient, UserID(r), messages, logger)
+
 		threadID := req.ThreadID
 		persistThread := threadID != "" && !req.Temporary
 		if threadID == "" {
@@ -162,7 +171,15 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			Msg("chat: routing to agent")
 
 		if !isStream {
-			agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
+			// M6: route stream:false through the coordinator too so every turn is
+			// durable/event-sourced (not just streaming turns). Falls back to the
+			// direct run only when no coordinator is wired. Response shape is the
+			// identical OpenAI ChatCompletion JSON either way.
+			if coord != nil {
+				agent.NonStreamAgentRunCoordinated(r.Context(), w, coord, core, threadID, UserID(r), messages, saver, logger)
+			} else {
+				agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
+			}
 		} else {
 			format := stream.ParseFormat(r.URL.Query().Get("format"))
 			if coord != nil {
@@ -206,6 +223,44 @@ func proxyAISDK(w http.ResponseWriter, baseURL, apiKey string, body []byte, clie
 		return
 	}
 	stream.PumpOpenAI(resp.Body, enc, model)
+}
+
+// injectMemoryRecall queries the per-user long-term memory store (OpenSearch
+// kNN, text-fallback) for memories relevant to the last user message and
+// prepends them to that message as a "Relevant memories" block. It is additive
+// and degradation-safe: a nil OpenSearch client, an empty query, or no results
+// returns the messages unchanged.
+//
+// NEEDS LIVE OpenSearch (and an embedding route for the kNN path) to verify
+// recall end-to-end; the wiring compiles and no-ops without them.
+func injectMemoryRecall(ctx context.Context, cfg *config.Config, osClient *opensearch.Client, userID string, messages []types.ChatMessage, logger zerolog.Logger) []types.ChatMessage {
+	if osClient == nil || len(messages) == 0 || userID == "" {
+		return messages
+	}
+	lastIdx := len(messages) - 1
+	if messages[lastIdx].Role != "user" || messages[lastIdx].Content == "" {
+		return messages
+	}
+	svc := pkgmemory.NewService(osClient, cfg, logger)
+	entries, err := svc.Search(ctx, cfg.AppName, userID, messages[lastIdx].Content, 5)
+	if err != nil || len(entries) == 0 {
+		return messages
+	}
+	var b strings.Builder
+	b.WriteString("Relevant memories about the user (from previous sessions):\n")
+	for _, e := range entries {
+		b.WriteString("- ")
+		b.WriteString(e.Content)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(messages[lastIdx].Content)
+
+	out := make([]types.ChatMessage, len(messages))
+	copy(out, messages)
+	out[lastIdx] = types.ChatMessage{Role: messages[lastIdx].Role, Content: b.String()}
+	logger.Info().Int("memories", len(entries)).Msg("chat: long-term memory recall injected")
+	return out
 }
 
 func upstreamErrorText(raw []byte) string {

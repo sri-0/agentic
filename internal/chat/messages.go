@@ -40,6 +40,15 @@ func (s *MessageSaver) SaveUserMessage(ctx context.Context, threadID, content st
 }
 
 func (s *MessageSaver) SaveAssistantMessage(ctx context.Context, threadID, content, model string) {
+	s.SaveAssistantMessageWithParts(ctx, threadID, content, model, nil)
+}
+
+// SaveAssistantMessageWithParts persists an assistant message with its full
+// AI-SDK parts payload (JSON) alongside the flattened content. parts is stored
+// on the messages index `parts` field so GET /v1/threads/{id}/messages can
+// rehydrate full messages (text/reasoning/tool/data-*), not text-only. content
+// is still flattened for search/back-compat. A nil parts stores text-only.
+func (s *MessageSaver) SaveAssistantMessageWithParts(ctx context.Context, threadID, content, model string, parts any) {
 	if s.client == nil {
 		return
 	}
@@ -50,6 +59,9 @@ func (s *MessageSaver) SaveAssistantMessage(ctx context.Context, threadID, conte
 		"content":    content,
 		"model":      model,
 		"created_at": now,
+	}
+	if parts != nil {
+		doc["parts"] = parts
 	}
 	go func() {
 		bgCtx := context.Background()

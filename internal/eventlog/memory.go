@@ -8,6 +8,13 @@ import (
 
 const memSubBuffer = 512
 
+// memHeartbeatInterval is how often an idle follow reader emits a heartbeat
+// SeqEvent so proxies don't idle-kill a memory-backed SSE stream. The Redis
+// backend already heartbeats on its XREAD BLOCK timeout; this gives the
+// in-memory log the same keep-alive behaviour. It is a var (not const) so tests
+// can shorten it; production keeps ~15s.
+var memHeartbeatInterval = 15 * time.Second
+
 // MemoryLog is an in-process EventLog. It retains the full durable backlog per
 // session (the source of truth) and fans live events out to subscribers
 // best-effort: if a subscriber's buffer is full the live copy is dropped, but it
@@ -136,7 +143,11 @@ func (m *MemoryLog) Read(ctx context.Context, sessionID string, afterSeq int64, 
 		// Live copies may be dropped under load, so before delivering any live
 		// event we fill any gap [lastSeq+1, se.Seq) from the durable backlog —
 		// guaranteeing exactly-once, gap-free delivery to out. Terminal events do
-		// NOT close the stream; only ctx cancellation does.
+		// NOT close the stream; only ctx cancellation does. An idle ticker emits a
+		// transient heartbeat (Seq == -1) so the SSE stream isn't idle-killed by a
+		// proxy — mirrors the Redis backend's XREAD-timeout heartbeat.
+		hb := time.NewTicker(memHeartbeatInterval)
+		defer hb.Stop()
 		for {
 			select {
 			case se, ok := <-sub:
@@ -155,6 +166,10 @@ func (m *MemoryLog) Read(ctx context.Context, sessionID string, afterSeq int64, 
 					return
 				}
 				lastSeq = se.Seq
+			case <-hb.C:
+				if !send(ctx, out, SeqEvent{Seq: -1, Event: AgentEvent{V: 1, Type: EvHeartbeat}}) {
+					return
+				}
 			case <-ctx.Done():
 				return
 			}

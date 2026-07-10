@@ -32,3 +32,26 @@ func NewEventLog(cfg *config.Config, logger zerolog.Logger) (eventlog.EventLog, 
 		return eventlog.NewMemoryLog(), nil
 	}
 }
+
+// NewTaskBoardStore creates the per-session task-board cache (Task 4). It uses
+// Redis when EVENTLOG_STORE=redis and Valkey is reachable (the original ask —
+// "task state in Redis"), and otherwise degrades to an in-memory store so the
+// default path keeps working without external services.
+func NewTaskBoardStore(cfg *config.Config, logger zerolog.Logger) eventlog.TaskBoardStore {
+	switch cfg.EventLogStore {
+	case "redis", "valkey":
+		if cfg.Valkey == nil {
+			logger.Warn().Msg("taskboard: EVENTLOG_STORE=redis but no Valkey config; using in-memory")
+			return eventlog.NewMemoryTaskBoardStore()
+		}
+		v, err := pkgvalkey.New(context.Background(), *cfg.Valkey)
+		if err != nil {
+			logger.Warn().Err(err).Msg("taskboard: valkey unavailable; using in-memory")
+			return eventlog.NewMemoryTaskBoardStore()
+		}
+		logger.Info().Msg("taskboard: using redis store")
+		return eventlog.NewRedisTaskBoardStore(v.Client, cfg.AppName)
+	default:
+		return eventlog.NewMemoryTaskBoardStore()
+	}
+}
