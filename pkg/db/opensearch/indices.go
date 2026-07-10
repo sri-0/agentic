@@ -91,7 +91,7 @@ var MessagesMapping = json.RawMessage(`{
 			"user_id":          { "type": "keyword" },
 			"role":             { "type": "keyword" },
 			"content":          { "type": "text" },
-			"parts":            { "type": "text", "index": false },
+			"parts":            { "type": "object", "enabled": false },
 			"model":            { "type": "keyword" },
 			"message_group_id": { "type": "keyword" },
 			"created_at":       { "type": "date" }
