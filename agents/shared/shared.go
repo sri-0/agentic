@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agentic/internal/config"
+	"agentic/internal/roster"
 	"agentic/internal/tools"
 	"agentic/pkg/db/opensearch"
 	genaiopenai "agentic/pkg/genai/openai"
@@ -55,18 +56,55 @@ func BuildLLMAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.
 		HTTPClient: httpClient,
 	})
 
-	agentTools, err := ResolveTools(agentCfg.Tools, deps)
+	// Read-only agents (explore/plan/verification) strip state-mutating tools via
+	// the shared glob ruleset — replacing the per-package writeTools/blockedTools
+	// maps that used to live in those (now deleted) packages.
+	toolNames := agentCfg.Tools
+	if agentCfg.ReadOnly {
+		toolNames = roster.ReadOnlyPermissions().Filter(toolNames)
+	}
+
+	agentTools, err := ResolveTools(toolNames, deps)
 	if err != nil {
 		return nil, err
+	}
+
+	instruction := agentCfg.SystemPrompt
+
+	// codeguide-style agents advertise the skills catalogue.
+	if agentCfg.InjectSkillsManifest {
+		if manifest := BuildSkillsManifest(deps.OSClient); manifest != "" {
+			instruction += manifest
+		}
+	}
+
+	// Tool-call discipline: without this, weaker models loop on a tool that
+	// returns little of use (e.g. an unconfigured web_search), making 100+
+	// identical calls and stalling a worker for minutes.
+	if len(agentTools) > 0 {
+		instruction += "\n\n## Tool discipline\n" +
+			"Call tools only when needed, and call any single tool at most 3 times. " +
+			"Never repeat a query you have already run. If a tool returns little of use, " +
+			"do NOT keep retrying it — stop calling tools and write your answer with what you have."
+	}
+
+	// Verification agents must end with a machine-readable verdict.
+	if agentCfg.AppendVerdict && !strings.Contains(instruction, "VERDICT:") {
+		instruction += "\n\nREMINDER: End your response with exactly: VERDICT: PASS, VERDICT: FAIL, or VERDICT: PARTIAL"
 	}
 
 	llmCfg := llmagent.Config{
 		Name:                    agentCfg.Name,
 		Description:             agentCfg.Description,
 		Model:                   m,
-		Instruction:             agentCfg.SystemPrompt,
+		Instruction:             instruction,
 		Tools:                   agentTools,
 		DisallowTransferToPeers: true,
+	}
+
+	// MCP: attach toolsets for any MCP servers this agent is allowed to use.
+	if len(agentCfg.MCPServers) > 0 && deps.MCPToolsets != nil {
+		llmCfg.Toolsets = deps.MCPToolsets(agentCfg.MCPServers)
 	}
 
 	if agentCfg.OutputKey != "" {
@@ -111,9 +149,9 @@ func BuildSkillsManifest(osClient *opensearch.Client) string {
 }
 
 func RequireSubAgent(cfg *config.Config, agentCfg *config.AgentConfig, name string, deps tools.Deps) (agent.Agent, error) {
-	sub := agentCfg.FindSubAgent(name)
-	if sub == nil {
-		return nil, fmt.Errorf("required sub_agent %q not found in config", name)
+	sub, err := cfg.Agents.ResolveSubAgentByName(agentCfg, name)
+	if err != nil {
+		return nil, fmt.Errorf("required sub_agent %q: %w", name, err)
 	}
 	a, err := BuildLLMAgent(cfg, sub, deps)
 	if err != nil {

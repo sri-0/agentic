@@ -30,6 +30,17 @@ type AgentConfig struct {
 	MaxIterations      int      `yaml:"max_iterations,omitempty"`
 	MaxParallelWorkers int      `yaml:"max_parallel_workers,omitempty"`
 
+	// Leaf behaviour flags (consolidated from the former explore/plan/
+	// verification/codeguide packages). Defaulted by agent type in
+	// bootstrap.applyLeafDefaults when not set explicitly in YAML.
+	ReadOnly             bool `yaml:"read_only,omitempty"`              // strip state-mutating tools (roster.ReadOnlyPermissions)
+	AppendVerdict        bool `yaml:"append_verdict,omitempty"`         // append the PASS/FAIL/PARTIAL reminder
+	InjectSkillsManifest bool `yaml:"inject_skills_manifest,omitempty"` // append the <available_skills> block
+
+	// MCPServers lists MCP server names (from mcp.yaml) whose tools this agent
+	// may use. Resolved to ADK toolsets at build time.
+	MCPServers []string `yaml:"mcp_servers,omitempty"`
+
 	// Per-request model override, set by WithModelOverride and propagated to
 	// every resolved sub-agent so the user-selected model is used across the
 	// whole tree (root + sub-agents). Not serialized.

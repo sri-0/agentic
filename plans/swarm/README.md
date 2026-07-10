@@ -31,6 +31,7 @@ This folder contains the per-phase implementation plans for re-architecting the 
 | 05 | [05-question-agents.md](05-question-agents.md) | Interactive question tool | 01, 02 |
 | 06 | [06-office-docs.md](06-office-docs.md) | Office-doc Python MCP server | 04 |
 | 07 | [07-frontend-contract.md](07-frontend-contract.md) | agentui changes (mirrors to `agentui/plans/swarm/`) | 01, 02, 05 |
+| 08 | [08-remediation.md](08-remediation.md) | Post-review remediation + feature completeness (findings C1–C4/H/M + frontend gaps → workstreams W0–W6) | 00–07 |
 
 ## Execution order
 

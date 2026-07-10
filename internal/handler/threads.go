@@ -14,13 +14,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// getUserID extracts the user ID from the request.
-// Currently uses X-User-ID header; will be replaced with JWT extraction.
+// getUserID extracts the user ID from the request. Delegates to the shared
+// identity seam (handler.UserID); kept as a thin alias for existing callers.
 func getUserID(r *http.Request) string {
-	if userID := r.Header.Get("X-User-ID"); userID != "" {
-		return userID
-	}
-	return "anonymous"
+	return UserID(r)
 }
 
 // ThreadsList returns all threads for the authenticated user, ordered by pinned then updated_at.

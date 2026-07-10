@@ -225,7 +225,7 @@ func buildDeepResearchHandler(t *testing.T, cfg *config.Config) http.HandlerFunc
 
 	reg := agent.NewRegistry()
 	reg.Register("deep-research", core)
-	return Chat(reg, cfg, nil, nil, nil, zerolog.Nop())
+	return Chat(reg, cfg, nil, nil, nil, nil, zerolog.Nop())
 }
 
 // ─── Basic Agent ─────────────────────────────────────────────────────────────
@@ -259,7 +259,7 @@ func TestWorkflow_BasicAgent(t *testing.T) {
 
 	reg := agent.NewRegistry()
 	reg.Register("basic-agent", core)
-	handler := Chat(reg, cfg, nil, nil, nil, zerolog.Nop())
+	handler := Chat(reg, cfg, nil, nil, nil, nil, zerolog.Nop())
 
 	w := sendChatRequest(t, handler, "basic-agent", "What is 2+2?", "basic-t1")
 
@@ -427,7 +427,7 @@ func TestWorkflow_TriageAgent(t *testing.T) {
 
 	reg := agent.NewRegistry()
 	reg.Register("triage-agent", core)
-	handler := Chat(reg, cfg, nil, nil, nil, zerolog.Nop())
+	handler := Chat(reg, cfg, nil, nil, nil, nil, zerolog.Nop())
 
 	w := sendChatRequest(t, handler, "triage-agent", "Critical: Database primary node is down, all write operations failing since 14:30 UTC. Multiple services affected.", "triage-t1")
 
@@ -498,7 +498,7 @@ func TestWorkflow_MultiAgentRegistry(t *testing.T) {
 	}
 	reg.Register("triage-agent", tc)
 
-	handler := Chat(reg, cfg, nil, nil, nil, zerolog.Nop())
+	handler := Chat(reg, cfg, nil, nil, nil, nil, zerolog.Nop())
 
 	// Route to basic agent
 	w1 := sendChatRequest(t, handler, "basic-agent", "hello", "multi-t1")

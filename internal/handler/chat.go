@@ -20,7 +20,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, logger zerolog.Logger) http.HandlerFunc {
+func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, coord *agent.Coordinator, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -165,7 +165,13 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
 		} else {
 			format := stream.ParseFormat(r.URL.Query().Get("format"))
-			agent.StreamAgentRunFormat(r.Context(), w, format, core, threadID, messages, saver, logger)
+			if coord != nil {
+				// Background, connection-decoupled run: the run continues even if
+				// this client disconnects; reconnect via /v1/sessions/{id}/stream.
+				agent.StreamAgentRunBackground(r.Context(), w, format, coord, core, threadID, UserID(r), messages, saver, logger)
+			} else {
+				agent.StreamAgentRunFormat(r.Context(), w, format, core, threadID, messages, saver, logger)
+			}
 		}
 	}
 }

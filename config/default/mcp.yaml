@@ -1,0 +1,27 @@
+# MCP servers the gateway connects to as a client. Agents opt in per server via
+# `mcp_servers: [<name>]` in their definition. Tools are namespaced server_tool.
+#
+# This file is optional; with no enabled servers the gateway runs normally.
+# Backend-held OAuth (browser only redirects; tokens stored server-side keyed by
+# (userID, server)) is described in plans/swarm/04-mcp.md — the static-header and
+# stdio paths below work today; OAuth token injection is the remaining wiring.
+servers:
+  # Office-document generation (Phase 06), a Python MCP server over streamable HTTP.
+  office:
+    type: remote
+    url: http://localhost:8090/mcp
+    enabled: true
+    # headers: { Authorization: "Bearer ${OFFICE_MCP_KEY}" }   # static API-key auth
+
+  # Example remote server requiring backend-held OAuth (e.g. GitLab).
+  gitlab:
+    type: remote
+    url: https://gitlab.example.com/api/mcp
+    oauth: true
+    enabled: false
+
+  # Example local (stdio) server.
+  # filesystem:
+  #   type: local
+  #   command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+  #   enabled: false

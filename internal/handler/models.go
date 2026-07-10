@@ -73,18 +73,24 @@ func Agents(cfg *config.Config) http.HandlerFunc {
 }
 
 func buildAgentEntry(cfg *config.Config, a config.AgentConfig, created int64) map[string]any {
+	// mode/can_dispatch expose the typed roster shape to the UI. Internal agents
+	// are filtered out before this point, so selectable agents are "primary";
+	// orchestrator types may dispatch sub-agents via the task tool.
+	canDispatch := a.Type == "coordinator" || a.Type == "swarm"
 	entry := map[string]any{
-		"id":          a.ID,
-		"object":      "agent",
-		"created":     created,
-		"owned_by":    "agentic",
-		"type":        a.Type,
-		"name":        a.Name,
-		"description": a.Description,
-		"model":       a.Model,
-		"provider":    a.Provider,
-		"tools":       a.Tools,
-		"sub_agents":  buildSubAgentEntries(cfg, a),
+		"id":           a.ID,
+		"object":       "agent",
+		"created":      created,
+		"owned_by":     "agentic",
+		"type":         a.Type,
+		"name":         a.Name,
+		"description":  a.Description,
+		"model":        a.Model,
+		"provider":     a.Provider,
+		"tools":        a.Tools,
+		"mode":         "primary",
+		"can_dispatch": canDispatch,
+		"sub_agents":   buildSubAgentEntries(cfg, a),
 	}
 	if a.SystemPrompt != "" {
 		entry["system_prompt"] = a.SystemPrompt

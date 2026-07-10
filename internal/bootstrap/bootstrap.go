@@ -10,21 +10,20 @@ import (
 	"path/filepath"
 	"time"
 
-	"agentic/agents/basic"
-	"agentic/agents/codeguide"
 	"agentic/agents/coordinator"
 	"agentic/agents/deepresearch"
-	"agentic/agents/explore"
-	"agentic/agents/plan"
+	"agentic/agents/shared"
 	"agentic/agents/swarm"
 	"agentic/agents/triage"
-	"agentic/agents/verification"
 	"agentic/internal/agent"
 	internalagents "agentic/internal/agents"
 	"agentic/internal/config"
+	"agentic/internal/eventlog"
 	"agentic/internal/hitl"
+	"agentic/internal/mcp"
 	internalmemory "agentic/internal/memory"
 	"agentic/internal/prompts"
+	"agentic/internal/roster"
 	"agentic/internal/rag"
 	"agentic/internal/tools"
 	"agentic/internal/tools/confluence"
@@ -42,27 +41,56 @@ import (
 
 type agentBuilder func(*config.Config, *config.AgentConfig, tools.Deps) (adkagent.Agent, error)
 
+// builders holds the orchestrator/pipeline agent types that wire static
+// sub-agent trees. Leaf LLM agents (basic, explore, plan, verification,
+// codeguide) are NOT here — they all build through shared.BuildLLMAgent, with
+// their former per-package behaviour expressed as declarative flags on
+// AgentConfig (see applyLeafDefaults).
 var builders = map[string]agentBuilder{
-	"basic":         basic.NewAgent,
 	"deep-research": deepresearch.NewAgent,
 	"triage":        triage.NewAgent,
 	"swarm":         swarm.NewAgent,
-	"explore":       explore.NewAgent,
-	"plan":          plan.NewAgent,
-	"verification":  verification.NewAgent,
 	"coordinator":   coordinator.NewAgent,
-	"codeguide":     codeguide.NewAgent,
+}
+
+// leafTypes are the agent types built by the single consolidated leaf builder.
+var leafTypes = map[string]bool{
+	"":             true, // default
+	"basic":        true,
+	"explore":      true,
+	"plan":         true,
+	"verification": true,
+	"codeguide":    true,
+}
+
+// applyLeafDefaults sets the declarative leaf-behaviour flags implied by an
+// agent's type, preserving the behaviour of the former explore/plan/
+// verification/codeguide packages without requiring YAML edits. Explicit YAML
+// values (true) are never downgraded. Idempotent.
+func applyLeafDefaults(ac *config.AgentConfig) {
+	switch ac.Type {
+	case "explore", "plan":
+		ac.ReadOnly = true
+	case "verification":
+		ac.ReadOnly = true
+		ac.AppendVerdict = true
+	case "codeguide", "basic", "":
+		// basic/default agents advertise the skills catalogue (former
+		// basic.NewAgent behaviour), as does the codeguide guide agent.
+		ac.InjectSkillsManifest = true
+	}
 }
 
 // BuildAgentTree builds a single root agent (and its sub-agent hierarchy) for
-// the given agent config, using the registered builder for its type. An empty
-// Type defaults to "basic". This is the same logic the startup loop uses, but
-// exposed so callers can build agent trees per-request (e.g. with a model
-// override).
+// the given agent config. Leaf types build through the consolidated
+// shared.BuildLLMAgent; orchestrator types use their registered builder. An
+// empty Type defaults to a basic leaf. Exposed so callers can build trees
+// per-request (e.g. with a model override).
 func BuildAgentTree(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.Deps) (adkagent.Agent, error) {
 	agentType := agentCfg.Type
-	if agentType == "" {
-		agentType = "basic"
+	if leafTypes[agentType] {
+		applyLeafDefaults(agentCfg)
+		return shared.BuildLLMAgent(cfg, agentCfg, deps)
 	}
 	build, ok := builders[agentType]
 	if !ok {
@@ -84,6 +112,13 @@ type Result struct {
 	Agents map[string]adkagent.Agent
 	// AgentConfigs keyed by agent config ID.
 	AgentConfigs map[string]*config.AgentConfig
+	// Roster is the typed registry view over the loaded agents (for the task
+	// tool manifest and GET /v1/agents).
+	Roster *roster.Registry
+	// EventLog is the durable per-session event log (background runs + resume).
+	EventLog eventlog.EventLog
+	// RunCoordinator manages background, connection-decoupled agent runs.
+	RunCoordinator *agent.Coordinator
 	// Internal agents for system operations (compaction, session memory, suggestions, etc.)
 	InternalAgents *internalagents.Registry
 	// Prompt template store loaded from config/prompts/
@@ -132,8 +167,16 @@ func Init(ctx context.Context) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agents.yaml is required: %w", err)
 	}
+	// Merge any markdown agent definitions (config/<env>/agents/*.md), which
+	// override matching YAML entries by id.
+	if err := roster.LoadMarkdownDir(agentsCfg, filepath.Join(configDir, "agents")); err != nil {
+		logger.Warn().Err(err).Msg("failed to load markdown agent definitions")
+	}
 	cfg.Agents = agentsCfg
-	logger.Info().Strs("agents", agentsCfg.AgentIDs()).Msg("agents config loaded")
+	reg := roster.FromAgentsConfig(agentsCfg)
+	logger.Info().Strs("agents", agentsCfg.AgentIDs()).
+		Int("primary", len(reg.Primary())).Int("dispatchable", len(reg.Dispatchable())).
+		Msg("agents config loaded")
 
 	ragCfg, err := config.LoadRAG(filepath.Join(configDir, "rag.yaml"))
 	if err != nil {
@@ -189,6 +232,16 @@ func Init(ctx context.Context) (*Result, error) {
 
 	deps := tools.Deps{RAGClient: ragClient, OSClient: osClient, ConfluenceClient: confluenceClient, MemoryTools: memToolMap, Logger: logger}
 
+	// MCP servers: the backend connects as an MCP client; agents that list a
+	// server in mcp_servers get its tools. Missing mcp.yaml => no servers.
+	mcpCfg, err := config.LoadMCP(filepath.Join(configDir, "mcp.yaml"))
+	if err != nil {
+		logger.Warn().Err(err).Msg("mcp.yaml failed to load")
+		mcpCfg = &config.MCPConfig{}
+	}
+	mcpManager := mcp.NewManager(mcpCfg, logger)
+	deps.MCPToolsets = mcpManager.Toolsets
+
 	sessionService, err := agent.NewSessionService(cfg, logger)
 	if err != nil {
 		return nil, fmt.Errorf("session service: %w", err)
@@ -197,6 +250,34 @@ func Init(ctx context.Context) (*Result, error) {
 	hitlStore, err := agent.NewHITLStore(cfg, logger)
 	if err != nil {
 		return nil, fmt.Errorf("hitl store: %w", err)
+	}
+
+	eventLog, err := agent.NewEventLog(cfg, logger)
+	if err != nil {
+		return nil, fmt.Errorf("event log: %w", err)
+	}
+	runCoordinator := agent.NewCoordinator(eventLog, logger)
+
+	// Swarm dispatch: the task tool runs a chosen subagent (from the typed
+	// registry) as a child session via its own Runner. BuildChild closes over
+	// the (about-to-be-completed) deps so a dispatch-capable child also gets the
+	// task tool — this is how gated nesting works (only agents whose tool list
+	// includes "task" can dispatch). The closure runs lazily, after deps.TaskTool
+	// is set below, so the cycle is safe.
+	buildChild := func(def *roster.Definition) (adkagent.Agent, error) {
+		return shared.BuildLLMAgent(cfg, def.Config(), deps)
+	}
+	taskTool, err := tools.NewTaskTool(tools.TaskDeps{
+		Registry:       reg,
+		AppName:        cfg.AppName,
+		SessionService: sessionService,
+		BuildChild:     buildChild,
+	})
+	if err != nil {
+		logger.Warn().Err(err).Msg("task tool unavailable")
+	} else {
+		deps.TaskTool = taskTool
+		logger.Info().Msg("swarm: task dispatch tool ready")
 	}
 
 	agents := make(map[string]adkagent.Agent)
@@ -269,6 +350,9 @@ func Init(ctx context.Context) (*Result, error) {
 		HITLStore:      hitlStore,
 		Agents:         agents,
 		AgentConfigs:   agentConfigs,
+		Roster:         reg,
+		EventLog:       eventLog,
+		RunCoordinator: runCoordinator,
 		InternalAgents: internalReg,
 		PromptStore:    promptStore,
 		SessionMemory:  sessionMem,

@@ -19,7 +19,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all routes and middleware.
-func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, logger zerolog.Logger) *mux.Router {
+func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, coord *agent.Coordinator, logger zerolog.Logger) *mux.Router {
 	r := mux.NewRouter()
 
 	r.Use(corsMiddleware)
@@ -35,14 +35,23 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 	r.HandleFunc("/docs", handler.APIDocs(cfg.AppName)).Methods("GET")
 	r.HandleFunc("/v1/models", handler.Models(cfg)).Methods("GET")
 	r.HandleFunc("/v1/agents", handler.Agents(cfg)).Methods("GET")
-	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, agentConfigs, buildOverrideCore, logger)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, agentConfigs, buildOverrideCore, coord, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/messages", handler.Messages(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, logger)).Methods("POST", "OPTIONS")
 
+	// Server-side sessions: list still-running sessions, check status, and
+	// attach/resume a session's event stream (?after=<seq> for exactly-once resume).
+	if coord != nil {
+		r.HandleFunc("/v1/sessions", handler.SessionsList(coord)).Methods("GET")
+		r.HandleFunc("/v1/sessions/{id}", handler.SessionStatus(coord)).Methods("GET")
+		r.HandleFunc("/v1/sessions/{id}/stream", handler.SessionStream(coord, logger)).Methods("GET")
+	}
+
 	// Internal agent endpoints
 	if internalAgents != nil {
 		r.HandleFunc("/v1/suggestions", handler.Suggestions(internalAgents, sessionSvc, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/route", handler.Route(internalAgents, cfg, sessionSvc, logger)).Methods("POST", "OPTIONS")
 	}
 
 	// RAG search endpoint (standalone vector/text search)
