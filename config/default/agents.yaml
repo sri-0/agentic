@@ -43,9 +43,9 @@ agents:
     sub_agents:
       - research-planner
       - document-analyst
-      - data-analyst
+      - dr-data-analyst
       - findings-summarizer
-      - gap-analyst
+      - dr-gap-analyst
       - report-generator
       - report-critic
 
@@ -60,37 +60,11 @@ agents:
       - severity-classifier
       - report-agent
 
-  - id: research-swarm
-    type: swarm
-    name: research_swarm
-    description: Multi-agent research swarm that dynamically decomposes tasks and assigns workers
-    model: gpt-oss-120b
-    provider: openrouter
-    max_iterations: 4
-    max_parallel_workers: 3
-    system_prompt: |
-      You are a research coordinator managing a swarm of specialist workers.
-      Your job is to break down the user's request into concrete tasks, assign them
-      to the most appropriate workers, review their results, and produce a final synthesis.
-
-      Strategy:
-      1. Analyze the user's question and identify what information is needed
-      2. Create tasks for your workers — be specific about what each worker should do
-      3. After workers complete, review results for gaps or follow-up questions
-      4. Either create follow-up tasks or synthesize a final comprehensive answer
-
-      Always assign task IDs like "t1", "t2", etc.
-      When creating the task board, output ONLY the JSON array, no markdown fencing.
-    output_agent: writer
-    sub_agents:
-      - swarm-web-researcher
-      - swarm-data-analyst
-      - swarm-writer
-
   # ── Claude Code-inspired agents ───────────────────────────────────────────
 
   - id: explore-agent
     type: explore
+    mode: all
     name: explore_agent
     description: Fast read-only codebase exploration agent. Searches documents and knowledge bases without modifying anything.
     model: gpt-oss-120b
@@ -124,6 +98,7 @@ agents:
 
   - id: plan-agent
     type: plan
+    mode: all
     name: plan_agent
     description: Software architect agent that designs implementation plans. Read-only — explores and plans but never modifies.
     model: gpt-oss-120b
@@ -254,57 +229,6 @@ agents:
       - confluence_read_page
       - search_memories
 
-  - id: task-coordinator
-    type: coordinator
-    name: task_coordinator
-    description: Coordinator agent that orchestrates tasks across multiple specialist workers. Plans, delegates, synthesizes.
-    model: gpt-oss-120b
-    provider: openrouter
-    max_iterations: 5
-    max_parallel_workers: 3
-    output_agent: coordinator
-    system_prompt: |
-      You are a task coordinator managing a team of specialist workers.
-
-      ## Your Role
-
-      You are a **coordinator**. Your job is to:
-      - Help the user achieve their goal
-      - Direct workers to research, analyze, and produce deliverables
-      - Synthesize results and communicate with the user
-      - Answer questions directly when possible — don't delegate trivially
-
-      ## Key Principles
-
-      ### Always synthesize — your most important job
-      When workers report findings, you must understand them before directing follow-up work.
-      Read the findings. Identify the approach. Then write a prompt that proves you understood
-      by including specific details and exactly what to do next.
-
-      Never write "based on your findings" — that delegates understanding to the worker.
-
-      ### Parallelism is your superpower
-      Launch independent workers concurrently. Don't serialize work that can run simultaneously.
-
-      ### Choose continue vs. spawn by context overlap
-      - Research explored exactly what needs work next → continue with synthesized spec
-      - Research was broad but next step is narrow → spawn fresh with focused spec
-      - Correcting a failure → continue (worker has error context)
-      - Verifying another worker's output → spawn fresh (fresh eyes)
-
-      ### Prompt quality
-      - Include specific details — workers start fresh and need complete context
-      - State what "done" looks like
-      - Add a purpose statement so workers calibrate depth
-
-      When creating the task board, output ONLY the JSON array, no markdown fencing.
-      Always assign task IDs like "t1", "t2", etc.
-    sub_agents:
-      - coordinator-researcher
-      - coordinator-analyst
-      - coordinator-writer
-      - coordinator-verifier
-
   # ── Internal sub-agents (workers) — not selectable top-level ──────────────
 
   # deep-research workers
@@ -345,9 +269,9 @@ agents:
       Document:
       {current_document}
 
-  - id: data-analyst
+  - id: dr-data-analyst
     internal: true
-    name: data_analyst
+    name: dr_data_analyst
     description: Queries databases for supporting quantitative data related to the document
     model: gpt-oss-120b
     provider: openrouter
@@ -384,9 +308,9 @@ agents:
       Supporting Data:
       {database_results}
 
-  - id: gap-analyst
+  - id: dr-gap-analyst
     internal: true
-    name: gap_analyst
+    name: dr_gap_analyst
     description: Identifies gaps between research plan and accumulated findings
     model: gpt-oss-120b
     provider: openrouter
@@ -558,114 +482,3 @@ agents:
       Produce a clear triage summary with your recommendation.
     tools:
       - trigger_alert
-
-  # research-swarm workers
-  - id: swarm-web-researcher
-    internal: true
-    name: web_researcher
-    description: Searches the web and knowledge base for information
-    model: gpt-oss-120b
-    provider: openrouter
-    system_prompt: |
-      You are a web researcher. Your task is described below. Search thoroughly
-      and provide detailed, factual findings with sources where possible.
-
-      Your assigned task: {swarm:current_task}
-    tools:
-      - web_search
-      - retrieve_documents
-
-  - id: swarm-data-analyst
-    internal: true
-    name: data_analyst
-    description: Queries databases and analyzes structured data and metrics
-    model: gpt-oss-120b
-    provider: openrouter
-    system_prompt: |
-      You are a data analyst. Your task is described below. Query relevant databases
-      and provide quantitative analysis with specific numbers and trends.
-
-      Your assigned task: {swarm:current_task}
-    tools:
-      - query_database
-      - opensearch_retrieve
-      - calculate
-
-  - id: swarm-writer
-    internal: true
-    name: writer
-    description: Synthesizes information into clear, well-structured prose
-    model: gpt-oss-120b
-    provider: openrouter
-    system_prompt: |
-      You are a technical writer. Your task is described below. Produce clear,
-      well-structured content based on any available context.
-
-      Your assigned task: {swarm:current_task}
-    tools: []
-
-  # task-coordinator workers
-  - id: coordinator-researcher
-    internal: true
-    name: researcher
-    description: Searches documents, knowledge bases, and the web for information
-    model: gpt-oss-120b
-    provider: openrouter
-    system_prompt: |
-      You are a researcher. Your task is described below. Search thoroughly
-      and provide detailed, factual findings with sources where possible.
-      Report findings — do not modify data.
-
-      Your assigned task: {coordinator:current_task}
-    tools:
-      - retrieve_documents
-      - opensearch_retrieve
-      - web_search
-      - confluence_search
-      - confluence_read_page
-
-  - id: coordinator-analyst
-    internal: true
-    name: analyst
-    description: Queries databases and analyzes structured data and metrics
-    model: gpt-oss-120b
-    provider: openrouter
-    system_prompt: |
-      You are a data analyst. Your task is described below. Query relevant databases
-      and provide quantitative analysis with specific numbers and trends.
-
-      Your assigned task: {coordinator:current_task}
-    tools:
-      - query_database
-      - opensearch_retrieve
-      - calculate
-
-  - id: coordinator-writer
-    internal: true
-    name: writer
-    description: Synthesizes information into clear, well-structured prose
-    model: gpt-oss-120b
-    provider: openrouter
-    system_prompt: |
-      You are a technical writer. Your task is described below. Produce clear,
-      well-structured content based on any available context.
-
-      Your assigned task: {coordinator:current_task}
-    tools: []
-
-  - id: coordinator-verifier
-    internal: true
-    name: verifier
-    description: Verifies claims, checks data integrity, and validates outputs
-    model: gpt-oss-120b
-    provider: openrouter
-    system_prompt: |
-      You are a verification specialist. Your task is described below. Check claims
-      against data, verify integrity, and report any inconsistencies found.
-
-      Your assigned task: {coordinator:current_task}
-    tools:
-      - query_database
-      - retrieve_documents
-      - opensearch_retrieve
-      - calculate

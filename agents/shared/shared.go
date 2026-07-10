@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"agentic/internal/config"
@@ -62,6 +63,19 @@ func BuildLLMAgent(cfg *config.Config, agentCfg *config.AgentConfig, deps tools.
 	toolNames := agentCfg.Tools
 	if agentCfg.ReadOnly {
 		toolNames = roster.ReadOnlyPermissions().Filter(toolNames)
+	}
+
+	// Governance: build this coordinator's task/task_join instances restricted to
+	// its AllowedSubagents so it can only dispatch the subagents it is permitted
+	// (rather than every dispatchable agent). Falls back to the shared instances.
+	if deps.TaskFactory != nil && (slices.Contains(toolNames, "task") || slices.Contains(toolNames, "task_join")) {
+		task, join, err := deps.TaskFactory(agentCfg.AllowedSubagents)
+		if err == nil {
+			d := deps
+			d.TaskTool = task
+			d.TaskJoinTool = join
+			deps = d
+		}
 	}
 
 	agentTools, err := ResolveTools(toolNames, deps)

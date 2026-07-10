@@ -17,6 +17,7 @@ import (
 type markdownFrontmatter struct {
 	ID                   string   `yaml:"id"`
 	Type                 string   `yaml:"type"`
+	Mode                 string   `yaml:"mode"`
 	Name                 string   `yaml:"name"`
 	Description          string   `yaml:"description"`
 	Model                string   `yaml:"model"`
@@ -28,6 +29,7 @@ type markdownFrontmatter struct {
 	OutputAgent          string   `yaml:"output_agent"`
 	MaxIterations        int      `yaml:"max_iterations"`
 	MaxParallelWorkers   int      `yaml:"max_parallel_workers"`
+	AllowedSubagents     []string `yaml:"allowed_subagents"`
 	ReadOnly             bool     `yaml:"read_only"`
 	AppendVerdict        bool     `yaml:"append_verdict"`
 	InjectSkillsManifest bool     `yaml:"inject_skills_manifest"`
@@ -64,6 +66,7 @@ func LoadMarkdownDir(ac *config.AgentsConfig, dir string) error {
 		merged := config.AgentConfig{
 			ID:                   fm.ID,
 			Type:                 fm.Type,
+			Mode:                 fm.Mode,
 			Name:                 fm.Name,
 			Description:          fm.Description,
 			Model:                fm.Model,
@@ -76,6 +79,7 @@ func LoadMarkdownDir(ac *config.AgentsConfig, dir string) error {
 			OutputAgent:          fm.OutputAgent,
 			MaxIterations:        fm.MaxIterations,
 			MaxParallelWorkers:   fm.MaxParallelWorkers,
+			AllowedSubagents:     fm.AllowedSubagents,
 			ReadOnly:             fm.ReadOnly,
 			AppendVerdict:        fm.AppendVerdict,
 			InjectSkillsManifest: fm.InjectSkillsManifest,

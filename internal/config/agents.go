@@ -14,6 +14,10 @@ type AgentsConfig struct {
 type AgentConfig struct {
 	ID           string        `yaml:"id"`
 	Type         string        `yaml:"type"`
+	// Mode selects roster visibility: "primary" (user-selectable), "subagent"
+	// (only dispatchable via the task tool), or "all". Empty defaults to primary
+	// (or subagent when Internal is set).
+	Mode         string        `yaml:"mode,omitempty"`
 	Name         string        `yaml:"name"`
 	Description  string        `yaml:"description"`
 	Model        string        `yaml:"model"`
@@ -29,6 +33,10 @@ type AgentConfig struct {
 	Keywords           []string `yaml:"keywords,omitempty"`
 	MaxIterations      int      `yaml:"max_iterations,omitempty"`
 	MaxParallelWorkers int      `yaml:"max_parallel_workers,omitempty"`
+
+	// AllowedSubagents restricts which subagent types this agent's task tool may
+	// dispatch (governance). Empty means "all dispatchable" (legacy behaviour).
+	AllowedSubagents []string `yaml:"allowed_subagents,omitempty"`
 
 	// Leaf behaviour flags (consolidated from the former explore/plan/
 	// verification/codeguide packages). Defaulted by agent type in
@@ -63,6 +71,9 @@ func (c *AgentConfig) WithModelOverride(modelID, provider string) *AgentConfig {
 	return cp
 }
 
+// Clone returns a deep copy of the AgentConfig (exported wrapper over clone).
+func (c *AgentConfig) Clone() *AgentConfig { return c.clone() }
+
 // clone returns a deep copy of the AgentConfig, copying all slices so the
 // original is never aliased.
 func (c *AgentConfig) clone() *AgentConfig {
@@ -73,6 +84,7 @@ func (c *AgentConfig) clone() *AgentConfig {
 	cp.Tools = append([]string(nil), c.Tools...)
 	cp.Keywords = append([]string(nil), c.Keywords...)
 	cp.SubAgents = append([]string(nil), c.SubAgents...)
+	cp.AllowedSubagents = append([]string(nil), c.AllowedSubagents...)
 	return &cp
 }
 

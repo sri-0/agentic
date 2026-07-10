@@ -24,6 +24,7 @@ func ToolNames() []string {
 		"emit_artifact",
 		"todowrite",
 		"task",
+		"task_join",
 		"question",
 		"search_memories", "add_memory", "update_memory", "delete_memory", "list_memories",
 	}
@@ -41,7 +42,13 @@ type Deps struct {
 	OSClient         *opensearch.Client
 	ConfluenceClient *confluence.Client
 	MemoryTools      map[string]tool.Tool // keyed by tool name
-	TaskTool         tool.Tool            // the swarm dispatch tool (built in bootstrap)
+	TaskTool         tool.Tool            // fallback swarm dispatch tool (no per-agent governance)
+	TaskJoinTool     tool.Tool            // fallback join tool paired with TaskTool
+	// TaskFactory builds a governed (task, task_join) pair for a specific
+	// coordinator, restricted to its AllowedSubagents. When set it is preferred
+	// over the shared TaskTool/TaskJoinTool so each coordinator only sees the
+	// subagents it is allowed to dispatch.
+	TaskFactory func(allowed []string) (task tool.Tool, join tool.Tool, err error)
 	MCPToolsets      func(servers []string) []tool.Toolset // resolves MCP server names to ADK toolsets
 	Logger           zerolog.Logger
 }
@@ -88,6 +95,11 @@ func NewToolByName(name string, deps Deps) (tool.Tool, error) {
 			return deps.TaskTool, nil
 		}
 		return nil, fmt.Errorf("task tool not available (no roster/session configured)")
+	case "task_join":
+		if deps.TaskJoinTool != nil {
+			return deps.TaskJoinTool, nil
+		}
+		return nil, fmt.Errorf("task_join tool not available (no roster/session configured)")
 	case "search_memories", "add_memory", "update_memory", "delete_memory", "list_memories":
 		if t, ok := deps.MemoryTools[name]; ok {
 			return t, nil

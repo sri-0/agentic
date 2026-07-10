@@ -8,12 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
-	"agentic/agents/coordinator"
 	"agentic/agents/deepresearch"
 	"agentic/agents/shared"
-	"agentic/agents/swarm"
 	"agentic/agents/triage"
 	"agentic/internal/agent"
 	internalagents "agentic/internal/agents"
@@ -41,6 +40,17 @@ import (
 
 type agentBuilder func(*config.Config, *config.AgentConfig, tools.Deps) (adkagent.Agent, error)
 
+// filterOut returns names with every entry in drop removed (order preserved).
+func filterOut(names []string, drop ...string) []string {
+	out := names[:0:0]
+	for _, n := range names {
+		if !slices.Contains(drop, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // builders holds the orchestrator/pipeline agent types that wire static
 // sub-agent trees. Leaf LLM agents (basic, explore, plan, verification,
 // codeguide) are NOT here — they all build through shared.BuildLLMAgent, with
@@ -49,8 +59,6 @@ type agentBuilder func(*config.Config, *config.AgentConfig, tools.Deps) (adkagen
 var builders = map[string]agentBuilder{
 	"deep-research": deepresearch.NewAgent,
 	"triage":        triage.NewAgent,
-	"swarm":         swarm.NewAgent,
-	"coordinator":   coordinator.NewAgent,
 }
 
 // leafTypes are the agent types built by the single consolidated leaf builder.
@@ -259,25 +267,56 @@ func Init(ctx context.Context) (*Result, error) {
 	runCoordinator := agent.NewCoordinator(eventLog, logger)
 
 	// Swarm dispatch: the task tool runs a chosen subagent (from the typed
-	// registry) as a child session via its own Runner. BuildChild closes over
-	// the (about-to-be-completed) deps so a dispatch-capable child also gets the
-	// task tool — this is how gated nesting works (only agents whose tool list
-	// includes "task" can dispatch). The closure runs lazily, after deps.TaskTool
-	// is set below, so the cycle is safe.
+	// registry) as a child session via its own Runner, streaming the child's
+	// events into the PARENT session's event log (attributed to the sub-agent) so
+	// the UI renders live agent cards.
+	//
+	// buildChild constructs a leaf child. By default spawned children are DENIED
+	// the question tool (a child has no HITL resume path here and would deadlock)
+	// and the task/task_join tools (prevents unbounded nesting). A child whose
+	// definition explicitly opts into sub-dispatch (its tool list includes "task")
+	// keeps those tools — gated nesting.
 	buildChild := func(def *roster.Definition) (adkagent.Agent, error) {
-		return shared.BuildLLMAgent(cfg, def.Config(), deps)
+		cc := def.Config().Clone()
+		if !def.CanDispatch {
+			cc.Tools = filterOut(cc.Tools, "task", "task_join")
+		}
+		cc.Tools = filterOut(cc.Tools, "question")
+		return shared.BuildLLMAgent(cfg, cc, deps)
 	}
-	taskTool, err := tools.NewTaskTool(tools.TaskDeps{
-		Registry:       reg,
-		AppName:        cfg.AppName,
-		SessionService: sessionService,
-		BuildChild:     buildChild,
-	})
-	if err != nil {
+
+	// TaskFactory builds a governed (task, task_join) pair per coordinator,
+	// restricted to that coordinator's AllowedSubagents, sharing one hub/semaphore
+	// so background dispatch and task_join coordinate.
+	deps.TaskFactory = func(allowed []string) (tool.Tool, tool.Tool, error) {
+		hub := tools.NewTaskHub(0)
+		td := tools.TaskDeps{
+			Registry:       reg,
+			AppName:        cfg.AppName,
+			SessionService: sessionService,
+			EventLog:       eventLog,
+			BuildChild:     buildChild,
+			Allowed:        allowed,
+			Hub:            hub,
+		}
+		task, err := tools.NewTaskTool(td)
+		if err != nil {
+			return nil, nil, err
+		}
+		join, err := tools.NewTaskJoinTool(hub)
+		if err != nil {
+			return nil, nil, err
+		}
+		return task, join, nil
+	}
+	// Ungoverned fallback (used if an agent has task but no AllowedSubagents /
+	// TaskFactory path is unavailable).
+	if task, join, err := deps.TaskFactory(nil); err != nil {
 		logger.Warn().Err(err).Msg("task tool unavailable")
 	} else {
-		deps.TaskTool = taskTool
-		logger.Info().Msg("swarm: task dispatch tool ready")
+		deps.TaskTool = task
+		deps.TaskJoinTool = join
+		logger.Info().Msg("swarm: task dispatch + join tools ready")
 	}
 
 	agents := make(map[string]adkagent.Agent)

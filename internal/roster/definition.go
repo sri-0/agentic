@@ -1,6 +1,10 @@
 package roster
 
-import "agentic/internal/config"
+import (
+	"slices"
+
+	"agentic/internal/config"
+)
 
 // Mode controls where an agent can be used.
 type Mode string
@@ -28,7 +32,8 @@ type Definition struct {
 	ReadOnly             bool
 	AppendVerdict        bool
 	InjectSkillsManifest bool
-	CanDispatch          bool // may be granted the task tool (orchestrator types)
+	CanDispatch          bool     // agent's tool list includes "task" → may spawn sub-agents
+	AllowedSubagents     []string // governance: subagent types this agent may dispatch (empty = all)
 
 	Source string // provenance: "yaml" | "<file>.md" | "code"
 
@@ -38,30 +43,41 @@ type Definition struct {
 // Config returns the underlying AgentConfig (for builders that still consume it).
 func (d *Definition) Config() *config.AgentConfig { return d.cfg }
 
-// dispatchTypes are the orchestrator agent types that can spawn sub-agents.
-var dispatchTypes = map[string]bool{"coordinator": true, "swarm": true}
+// resolveMode maps the config Mode string (and the legacy Internal flag) to a
+// roster Mode. An explicit mode wins; otherwise Internal implies subagent and
+// the default is primary.
+func resolveMode(ac *config.AgentConfig) Mode {
+	switch Mode(ac.Mode) {
+	case ModePrimary, ModeSubagent, ModeAll:
+		return Mode(ac.Mode)
+	}
+	if ac.Internal {
+		return ModeSubagent
+	}
+	return ModePrimary
+}
 
 // fromAgentConfig derives a Definition from a YAML AgentConfig, applying the
 // same type-driven defaults the builder uses (read-only, verdict, skills).
 func fromAgentConfig(ac *config.AgentConfig) *Definition {
-	mode := ModePrimary
-	if ac.Internal {
-		mode = ModeSubagent
-	}
 	d := &Definition{
 		Name:                 ac.ID,
 		DisplayName:          ac.Name,
 		Description:          ac.Description,
-		Mode:                 mode,
+		Mode:                 resolveMode(ac),
 		Model:                ac.Model,
 		Provider:             ac.Provider,
 		Tools:                ac.Tools,
 		ReadOnly:             ac.ReadOnly,
 		AppendVerdict:        ac.AppendVerdict,
 		InjectSkillsManifest: ac.InjectSkillsManifest,
-		CanDispatch:          dispatchTypes[ac.Type],
-		Source:               "yaml",
-		cfg:                  ac,
+		// CanDispatch is derived from the agent's tool list: an agent that has the
+		// "task" tool is a (sub-)coordinator able to spawn children. This replaces
+		// the legacy type-map coupling.
+		CanDispatch:      slices.Contains(ac.Tools, "task"),
+		AllowedSubagents: ac.AllowedSubagents,
+		Source:           "yaml",
+		cfg:              ac,
 	}
 	switch ac.Type {
 	case "explore", "plan":
