@@ -54,7 +54,9 @@ func Agents(cfg *config.Config) http.HandlerFunc {
 
 	if cfg.Agents != nil {
 		for _, a := range cfg.Agents.Agents {
-			if a.Internal {
+			// Exclude internal system agents and subagent-only roster entries
+			// (mode: subagent) — only user-selectable primary agents are listed.
+			if a.Internal || a.Mode == "subagent" {
 				continue
 			}
 			data = append(data, buildAgentEntry(cfg, a, created))
