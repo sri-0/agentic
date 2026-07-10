@@ -77,6 +77,9 @@ func (r *RedisStreamLog) appendArgs(data []byte) (dataArg, maxlenArg, ttlArg str
 // step, so the two can never be split by a crash or a competing writer. The seq
 // is the durable, gap-free sequence used for ?after=<seq> resume.
 func (r *RedisStreamLog) Append(ctx context.Context, sessionID string, ev AgentEvent) (int64, error) {
+	if ev.Ts == 0 {
+		ev.Ts = time.Now().UnixMilli() // stamp at write so projections have a stable per-event time
+	}
 	data, err := json.Marshal(ev)
 	if err != nil {
 		return 0, err

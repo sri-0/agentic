@@ -13,6 +13,18 @@ type ProjectedMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 	Parts   []Part `json:"parts"`
+
+	// Turn is the 0-based index of this assistant message within the session's
+	// event log (Nth flushed assistant turn). It is STABLE across re-projections
+	// of a growing log, so the archive can derive a deterministic OpenSearch _id
+	// ({sessionID}:{Turn}:{Role}) that upserts each message in place instead of
+	// appending a duplicate on every re-flush.
+	Turn int `json:"-"`
+	// TsMillis is the unix-ms timestamp of the first event that opened this
+	// assistant message. It is stable across re-flushes, so the archive can use it
+	// as a deterministic created_at (ordering stays correct even when an earlier
+	// turn is re-written after a later user message was saved).
+	TsMillis int64 `json:"-"`
 }
 
 // Part is one AI-SDK UIMessage part. Only the fields relevant to a given Type are
@@ -87,19 +99,22 @@ type projector struct {
 	open      bool
 	parts     []Part
 	content   string
+	openTs    int64          // ts (unix ms) of the first event that opened this message
+	turn      int            // 0-based index of the NEXT flushed assistant message
 	textIdx   int            // index into parts of the open text part, -1 if none
 	rsnIdx    int            // index into parts of the open reasoning part, -1 if none
 	toolIdx   map[string]int // tool call id -> parts index
 	taskParts map[string]int // task-list id -> parts index (last-wins in place)
 }
 
-func (p *projector) ensureOpen() {
+func (p *projector) ensureOpen(ts int64) {
 	if p.open {
 		return
 	}
 	p.open = true
 	p.parts = nil
 	p.content = ""
+	p.openTs = ts
 	p.textIdx = -1
 	p.rsnIdx = -1
 	p.toolIdx = map[string]int{}
@@ -112,7 +127,7 @@ func (p *projector) fold(ev AgentEvent) {
 		if !ev.IsOutput {
 			return
 		}
-		p.ensureOpen()
+		p.ensureOpen(ev.Ts)
 		// reasoning part closes when output text starts (mirrors the live encoder).
 		p.rsnIdx = -1
 		if p.textIdx < 0 {
@@ -126,7 +141,7 @@ func (p *projector) fold(ev AgentEvent) {
 		if !ev.IsOutput {
 			return
 		}
-		p.ensureOpen()
+		p.ensureOpen(ev.Ts)
 		p.textIdx = -1
 		if p.rsnIdx < 0 {
 			p.rsnIdx = len(p.parts)
@@ -135,7 +150,7 @@ func (p *projector) fold(ev AgentEvent) {
 		p.parts[p.rsnIdx].Text += ev.Text
 
 	case EvToolCall:
-		p.ensureOpen()
+		p.ensureOpen(ev.Ts)
 		id := toolCallID(ev)
 		part := Part{
 			Type:       PartDynamicTool,
@@ -150,7 +165,7 @@ func (p *projector) fold(ev AgentEvent) {
 		p.parts = append(p.parts, part)
 
 	case EvToolResult:
-		p.ensureOpen()
+		p.ensureOpen(ev.Ts)
 		id := toolCallID(ev)
 		if idx, ok := p.toolIdx[id]; ok {
 			p.parts[idx].State = "output-available"
@@ -164,12 +179,12 @@ func (p *projector) fold(ev AgentEvent) {
 		}
 
 	case EvArtifact:
-		p.ensureOpen()
+		p.ensureOpen(ev.Ts)
 		id := artifactID(ev.Artifact)
 		p.parts = append(p.parts, Part{Type: PartArtifact, ID: id, Data: artifactData(ev.Artifact)})
 
 	case EvTaskList:
-		p.ensureOpen()
+		p.ensureOpen(ev.Ts)
 		data := map[string]any{"tasks": taskItems(ev.Tasks)}
 		if idx, ok := p.taskParts["tasks"]; ok {
 			p.parts[idx].Data = data // last snapshot wins, updated in place
@@ -182,7 +197,7 @@ func (p *projector) fold(ev AgentEvent) {
 		if ev.Author == "" {
 			return
 		}
-		p.ensureOpen()
+		p.ensureOpen(ev.Ts)
 		status := "started"
 		if ev.Kind == KindDone {
 			status = "done"
@@ -197,7 +212,7 @@ func (p *projector) fold(ev AgentEvent) {
 		if ev.Author == "" {
 			return
 		}
-		p.ensureOpen()
+		p.ensureOpen(ev.Ts)
 		kind := KindText
 		if ev.Kind == KindReasoning {
 			kind = KindReasoning
@@ -219,11 +234,21 @@ func (p *projector) flush() {
 		return
 	}
 	if len(p.parts) > 0 {
-		p.messages = append(p.messages, ProjectedMessage{Role: "assistant", Content: p.content, Parts: p.parts})
+		p.messages = append(p.messages, ProjectedMessage{
+			Role:     "assistant",
+			Content:  p.content,
+			Parts:    p.parts,
+			Turn:     p.turn,
+			TsMillis: p.openTs,
+		})
+		// Advance the turn index only for a materialised assistant message, so the
+		// Nth assistant turn always maps to the same Turn across re-projections.
+		p.turn++
 	}
 	p.open = false
 	p.parts = nil
 	p.content = ""
+	p.openTs = 0
 }
 
 // ── field extraction helpers ─────────────────────────────────────────────────

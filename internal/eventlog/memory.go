@@ -57,6 +57,9 @@ func (m *MemoryLog) session(id string) *memSession {
 
 // Append assigns the next seq, stores ev, and fans it out to live subscribers.
 func (m *MemoryLog) Append(_ context.Context, sessionID string, ev AgentEvent) (int64, error) {
+	if ev.Ts == 0 {
+		ev.Ts = time.Now().UnixMilli() // stamp at write so projections have a stable per-event time
+	}
 	s := m.session(sessionID)
 	s.mu.Lock()
 	s.events = append(s.events, ev)

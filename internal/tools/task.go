@@ -286,7 +286,9 @@ func (d TaskDeps) runChild(ctx context.Context, r *runner.Runner, userID, parent
 		Author: label, SubagentType: args.SubagentType, SessionID: childID, Step: step,
 		Duration: time.Since(start).Milliseconds()})
 
-	finalStatus := "done"
+	// "completed" (not "done") so the UI TaskBar, which counts status === "completed"
+	// as finished, shows a settled child as done (e.g. 1/1, not 0/1).
+	finalStatus := "completed"
 	if runErr != nil || st.blocked {
 		finalStatus = "error"
 	}
