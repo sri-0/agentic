@@ -106,7 +106,7 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 		r.HandleFunc("/v1/memories/{id}", handler.MemoriesDelete(memorySvc, logger)).Methods("DELETE")
 
 		// Thread messages
-		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesList(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesList(osClient, coord, logger)).Methods("GET")
 		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesCreate(osClient, logger)).Methods("POST", "OPTIONS")
 		r.HandleFunc("/v1/threads/{id}/messages/bulk", handler.ThreadsMessagesBulkCreate(osClient, logger)).Methods("POST", "OPTIONS")
 		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesDelete(osClient, logger)).Methods("DELETE")
