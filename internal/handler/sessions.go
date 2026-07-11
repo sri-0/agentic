@@ -90,6 +90,25 @@ func SessionCancel(coord *agent.Coordinator, logger zerolog.Logger) http.Handler
 	}
 }
 
+// SessionMarkViewed marks a session as viewed by its owner (Task B,
+// POST /v1/sessions/{id}/viewed). Ownership is enforced via UserID(r): a session
+// unknown to the user or owned by someone else is a 404 (mirrors cancel). On
+// success the session's viewed flag flips to true, so GET /v1/sessions no longer
+// renders the completed-but-unseen ring.
+func SessionMarkViewed(coord *agent.Coordinator, logger zerolog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := UserID(r)
+		sessionID := mux.Vars(r)["id"]
+
+		if !coord.MarkViewed(userID, sessionID) {
+			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+			return
+		}
+		logger.Info().Str("session", sessionID).Str("user_id", userID).Msg("session marked viewed")
+		writeJSON(w, map[string]any{"session_id": sessionID, "viewed": true})
+	}
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)

@@ -246,3 +246,131 @@ func TestCoordinator_Cancel_NoDoubleTerminal(t *testing.T) {
 		t.Fatalf("got %d terminal events, want exactly 1", terminals)
 	}
 }
+
+// Task A: a finished (done) session older than the retention window is evicted by
+// sweep; a still-awaiting-input (paused HITL) session is NEVER evicted regardless
+// of age. Uses a controllable clock via c.now and a MemoryLog (implements
+// IdleSince/Evict).
+func TestCoordinator_Sweep_RetentionAndHITLGuard(t *testing.T) {
+	log := eventlog.NewMemoryLog()
+	c := NewCoordinator(log, zerolog.Nop())
+	c.StopSweeper() // drive sweep manually
+	c.SetSessionRetention(10 * time.Second)
+
+	base := time.Now()
+	c.now = func() time.Time { return base }
+
+	// A done session.
+	c.runFn = func(ctx context.Context, req RunRequest, enc *eventLogEncoder) runOutcome {
+		return runOutcome{status: RunDone}
+	}
+	if _, err := c.Start(RunRequest{SessionID: "done1", UserID: "u"}); err != nil {
+		t.Fatalf("Start done1: %v", err)
+	}
+	waitFor(t, "done1 finished", func() bool {
+		hh, _ := c.Status("u", "done1")
+		return hh != nil && hh.Status == RunDone
+	})
+
+	// A paused HITL session: force the handle into awaiting-input directly (the
+	// run seam returning awaiting-input routes through terminate → status set).
+	c.runFn = func(ctx context.Context, req RunRequest, enc *eventLogEncoder) runOutcome {
+		return runOutcome{status: RunAwaitingInput}
+	}
+	if _, err := c.Start(RunRequest{SessionID: "paused1", UserID: "u"}); err != nil {
+		t.Fatalf("Start paused1: %v", err)
+	}
+	waitFor(t, "paused1 awaiting", func() bool {
+		hh, _ := c.Status("u", "paused1")
+		return hh != nil && hh.Status == RunAwaitingInput
+	})
+
+	// Advance the clock beyond retention and sweep.
+	c.now = func() time.Time { return base.Add(30 * time.Second) }
+	c.sweep()
+
+	if _, ok := c.Status("u", "done1"); ok {
+		t.Fatal("done1 should have been evicted after retention")
+	}
+	if _, ok := c.Status("u", "paused1"); !ok {
+		t.Fatal("paused1 (awaiting-input) must NOT be evicted while paused")
+	}
+}
+
+// Task B: on a hard terminal the session starts UNVIEWED; MarkViewed flips it;
+// cross-user MarkViewed is rejected (ownership).
+func TestCoordinator_ViewedFlow(t *testing.T) {
+	log := eventlog.NewMemoryLog()
+	c := NewCoordinator(log, zerolog.Nop())
+	c.StopSweeper()
+	c.SetViewedStore(NewMemoryViewedStore())
+
+	c.runFn = func(ctx context.Context, req RunRequest, enc *eventLogEncoder) runOutcome {
+		return runOutcome{status: RunDone}
+	}
+	if _, err := c.Start(RunRequest{SessionID: "s", UserID: "owner"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitFor(t, "done", func() bool {
+		hh, _ := c.Status("owner", "s")
+		return hh != nil && hh.Status == RunDone
+	})
+
+	h, _ := c.Status("owner", "s")
+	if h.Viewed {
+		t.Fatal("session should start UNVIEWED after terminal")
+	}
+	// Cross-user MarkViewed rejected.
+	if c.MarkViewed("intruder", "s") {
+		t.Fatal("cross-user MarkViewed must be rejected")
+	}
+	// Owner MarkViewed succeeds and flips the flag.
+	if !c.MarkViewed("owner", "s") {
+		t.Fatal("owner MarkViewed should succeed")
+	}
+	h2, _ := c.Status("owner", "s")
+	if !h2.Viewed {
+		t.Fatal("session should be viewed=true after MarkViewed")
+	}
+}
+
+// Task C: the terminal archive flush is AWAITED before the terminal run-status
+// event is appended, so no reader can observe `done` before the flush completes.
+func TestCoordinator_TerminalFlush_BeforeTerminalEvent(t *testing.T) {
+	log := eventlog.NewMemoryLog()
+	c := NewCoordinator(log, zerolog.Nop())
+	c.StopSweeper()
+
+	var flushed bool
+	var flushedBeforeTerminal bool
+	c.SetTerminalFlusher(TerminalFlusherFunc(func(ctx context.Context, app, userID, sessionID string) error {
+		// At flush time the terminal event must NOT yet be in the log.
+		evs := drainEvents(t, log, sessionID, 0)
+		hasTerminal := false
+		for _, e := range evs {
+			if e.IsTerminal() {
+				hasTerminal = true
+			}
+		}
+		flushed = true
+		flushedBeforeTerminal = !hasTerminal
+		return nil
+	}), "app")
+
+	c.runFn = func(ctx context.Context, req RunRequest, enc *eventLogEncoder) runOutcome {
+		return runOutcome{status: RunDone}
+	}
+	if _, err := c.Start(RunRequest{SessionID: "s", UserID: "u"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitFor(t, "done", func() bool {
+		hh, _ := c.Status("u", "s")
+		return hh != nil && hh.Status == RunDone
+	})
+	if !flushed {
+		t.Fatal("terminal flusher was not invoked")
+	}
+	if !flushedBeforeTerminal {
+		t.Fatal("terminal flush must run BEFORE the terminal run-status event is appended")
+	}
+}

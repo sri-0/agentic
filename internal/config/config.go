@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"time"
 
 	pkgvalkey "agentic/pkg/db/valkey"
 
@@ -28,6 +29,13 @@ type Config struct {
 	HITLStore     string           `env:"HITL_STORE,default=memory"`     // "memory" or "valkey"
 	SessionStore  string           `env:"SESSION_STORE,default=memory"`  // "memory" or "valkey"
 	EventLogStore string           `env:"EVENTLOG_STORE,default=memory"` // "memory" or "redis"
+
+	// SessionRetention governs how long a finished/idle session stays resumable in
+	// the coordinator (listed by GET /v1/sessions) before the idle sweeper evicts
+	// it. An active (running/queued) or paused (awaiting-input HITL) session is
+	// never evicted regardless of this value. Also aligns the TTL of the per-user
+	// viewed flag so it self-cleans with the session.
+	SessionRetention time.Duration `env:"SESSION_RETENTION,default=1h"`
 
 	// Loaded from YAML files
 	Models *ModelsConfig

@@ -50,8 +50,24 @@ func (a *Archiver) FlushAsync(app, userID, sessionID string) {
 }
 
 // Flush synchronously reads the whole log for a session and writes the cold
-// archive + projected messages. Exposed for tests / explicit flushes.
+// archive + projected messages. Exposed for tests / explicit flushes. The
+// message docs are written without wait_for refresh (hot path); use
+// FlushWaitRefresh on the terminal path when the write must be immediately
+// searchable. Flush also satisfies the coordinator's TerminalFlusher; the
+// coordinator calls FlushWaitRefresh directly so terminal writes refresh.
 func (a *Archiver) Flush(ctx context.Context, app, userID, sessionID string) error {
+	return a.flush(ctx, app, userID, sessionID, false)
+}
+
+// FlushWaitRefresh is Flush but blocks until the projected message docs are
+// visible to search (refresh=wait_for). Used by the coordinator's synchronous
+// terminal flush (Task C) so a reload right after `done` can search the fresh
+// full-parts assistant message.
+func (a *Archiver) FlushWaitRefresh(ctx context.Context, app, userID, sessionID string) error {
+	return a.flush(ctx, app, userID, sessionID, true)
+}
+
+func (a *Archiver) flush(ctx context.Context, app, userID, sessionID string, waitRefresh bool) error {
 	if a.os == nil {
 		return nil
 	}
@@ -111,7 +127,7 @@ func (a *Archiver) Flush(ctx context.Context, app, userID, sessionID string) err
 		// log UPSERT each assistant message in place (PUT _doc/{id}) instead of
 		// appending a duplicate on every run terminal.
 		docID := fmt.Sprintf("%s:%d:%s", sessionID, m.Turn, m.Role)
-		if _, err := a.os.IndexDocument(ctx, opensearch.IndexMessages, docID, doc); err != nil {
+		if _, err := a.os.IndexDocumentRefresh(ctx, opensearch.IndexMessages, docID, doc, waitRefresh); err != nil {
 			a.logger.Warn().Err(err).Str("session", sessionID).Msg("archive message index failed")
 		}
 	}

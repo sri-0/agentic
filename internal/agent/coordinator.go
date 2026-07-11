@@ -29,9 +29,11 @@ const (
 	RunCancelled     RunStatus = "cancelled"
 )
 
-// evictIdleTTL is how long a finished session stays in the coordinator/log
-// before the idle sweeper evicts it (M1). An active run is never evicted.
-const evictIdleTTL = 30 * time.Minute
+// defaultSessionRetention is the fallback retention window for a finished/idle
+// session before the idle sweeper evicts it (M1) when none is configured. An
+// active run is never evicted. Overridden per-Coordinator via SessionRetention
+// (config SESSION_RETENTION).
+const defaultSessionRetention = time.Hour
 
 // evictSweepInterval is how often the sweeper runs.
 const evictSweepInterval = 5 * time.Minute
@@ -46,6 +48,13 @@ type RunHandle struct {
 	StartSeq  int64     `json:"start_seq"` // first seq THIS run will write (Head()+1 at Start)
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// Viewed is the per-user "seen the result" flag surfaced to the UI (Task B).
+	// It is NOT persisted on the handle; the coordinator fills it from the
+	// ViewedStore when returning a copy (Status/List). A finished-but-unviewed
+	// session (done && !viewed) renders the completed ring. Running/queued
+	// sessions have no meaningful viewed state and report false.
+	Viewed bool `json:"viewed"`
 
 	cancel   context.CancelFunc
 	termOnce *sync.Once // guards the single terminal append + status set per run
@@ -88,14 +97,65 @@ type Coordinator struct {
 	byUser  map[string]map[string]bool // sessionID set per user
 	pending map[string][]RunRequest    // per-session FIFO of queued turns (C2)
 
+	// sessionRetention governs how long a finished/idle session stays resumable
+	// before the sweeper evicts it (Task A, config SESSION_RETENTION). Read at
+	// sweep time; not a const so it can be configured per deployment.
+	sessionRetention time.Duration
+
 	evicter interface {
 		Evict(string)
 		IdleSince(string, time.Time) bool
 	}
 	stopSweep chan struct{}
 
-	hooks      []PostRunHook           // fired async on every run terminal
-	taskBoards eventlog.TaskBoardStore // per-session current-board cache (Task 4)
+	hooks       []PostRunHook           // fired async on every run terminal
+	taskBoards  eventlog.TaskBoardStore // per-session current-board cache (Task 4)
+	viewed      ViewedStore             // per-session per-user viewed flag (Task B)
+	termFlusher TerminalFlusher         // synchronous terminal archive flush (Task C)
+	app         string                  // app name for the terminal flush doc (Task C)
+}
+
+// TerminalFlusher persists the terminal turn's full-parts messages synchronously
+// (via the archiver's Flush) so a reload immediately after `done` sees tool parts
+// (Task C). It is awaited inside terminate with a bounded timeout before the
+// (still-async) post-run hooks fire; the deterministic _id makes it idempotent.
+type TerminalFlusher interface {
+	Flush(ctx context.Context, app, userID, sessionID string) error
+}
+
+// TerminalFlusherFunc adapts a function to the TerminalFlusher interface, so a
+// specific archiver method (e.g. FlushWaitRefresh) can be wired without the
+// archiver having to name its terminal method Flush.
+type TerminalFlusherFunc func(ctx context.Context, app, userID, sessionID string) error
+
+// Flush implements TerminalFlusher.
+func (f TerminalFlusherFunc) Flush(ctx context.Context, app, userID, sessionID string) error {
+	return f(ctx, app, userID, sessionID)
+}
+
+// SetTerminalFlusher wires the synchronous terminal archive flush (Task C). app
+// is the app name stamped on the flushed messages docs. Call during bootstrap
+// wiring. When nil, terminate falls back to the async ArchiveHook alone (legacy
+// behaviour).
+func (c *Coordinator) SetTerminalFlusher(f TerminalFlusher, app string) {
+	c.termFlusher = f
+	c.app = app
+}
+
+// SetViewedStore wires the per-session viewed store (Task B). Call during
+// bootstrap wiring. When nil, viewed is always reported false (running/queued
+// semantics) and MarkViewed is a no-op.
+func (c *Coordinator) SetViewedStore(s ViewedStore) { c.viewed = s }
+
+// SetSessionRetention overrides the finished/idle session retention window used
+// by the sweeper (Task A, config SESSION_RETENTION). Call during bootstrap
+// wiring; a non-positive value keeps the default.
+func (c *Coordinator) SetSessionRetention(d time.Duration) {
+	if d > 0 {
+		c.mu.Lock()
+		c.sessionRetention = d
+		c.mu.Unlock()
+	}
 }
 
 // SetTaskBoardStore attaches a per-session task-board cache (Redis, or in-memory
@@ -164,14 +224,15 @@ func (c *Coordinator) firePostRun(info PostRunInfo) {
 // NewCoordinator constructs a run coordinator over the given EventLog.
 func NewCoordinator(log eventlog.EventLog, logger zerolog.Logger) *Coordinator {
 	c := &Coordinator{
-		log:       log,
-		logger:    logger,
-		now:       time.Now,
-		active:    map[string]*RunHandle{},
-		known:     map[string]*RunHandle{},
-		byUser:    map[string]map[string]bool{},
-		pending:   map[string][]RunRequest{},
-		stopSweep: make(chan struct{}),
+		log:              log,
+		logger:           logger,
+		now:              time.Now,
+		active:           map[string]*RunHandle{},
+		known:            map[string]*RunHandle{},
+		byUser:           map[string]map[string]bool{},
+		pending:          map[string][]RunRequest{},
+		sessionRetention: defaultSessionRetention,
+		stopSweep:        make(chan struct{}),
 	}
 	c.runFn = c.defaultRunFunc
 	if ev, ok := log.(interface {
@@ -368,15 +429,58 @@ func (c *Coordinator) terminate(ctx context.Context, sessionID string, h *RunHan
 		delete(c.active, sessionID)
 		c.mu.Unlock()
 
+		// Task C: persist the terminal turn's FULL-PARTS messages SYNCHRONOUSLY
+		// (bounded) BEFORE appending the terminal run-status event. The terminal
+		// event is what a streaming/non-stream reader waits on to consider the run
+		// `done`, so flushing first guarantees the full-parts assistant doc (with
+		// tool parts) is already written+searchable by the time any client can
+		// observe completion and reload history — closing the "tools don't render
+		// after stream" race. ProjectMessages flushes the open assistant message at
+		// end-of-stream, so it does not need the terminal event in the log. The
+		// deterministic _id ({session}:{turn}:{role}) keeps this idempotent with the
+		// later async ArchiveHook re-flush (which also captures the terminal event in
+		// the raw session_events archive). Skipped on awaiting-input (turn not
+		// complete) and when no flusher is wired (legacy async path). Non-terminal
+		// paths are unaffected.
+		if c.termFlusher != nil && outcome.status != RunAwaitingInput {
+			fctx, fcancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := c.termFlusher.Flush(fctx, c.app, h.UserID, sessionID); err != nil {
+				c.logger.Warn().Err(err).Str("session", sessionID).Msg("terminal archive flush failed; async hook will retry")
+			}
+			fcancel()
+		}
+
+		// Task B: on a HARD terminal the owner has not yet seen the result — record
+		// the session UNVIEWED so the UI can render the completed-but-unseen ring.
+		// awaiting-input is a suspension, not a terminal, so it is skipped (viewed
+		// stays irrelevant). TTL aligns to session retention so the flag self-cleans
+		// when the session drops out of /v1/sessions.
+		if c.viewed != nil && outcome.status != RunAwaitingInput {
+			vctx, vcancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ttl := c.sessionRetention
+			if ttl <= 0 {
+				ttl = defaultSessionRetention
+			}
+			if err := c.viewed.SetUnviewed(vctx, sessionID, ttl); err != nil {
+				c.logger.Warn().Err(err).Str("session", sessionID).Msg("set unviewed failed")
+			}
+			vcancel()
+		}
+
+		// Terminal run-status event: appended AFTER the synchronous flush above so a
+		// reader can never observe `done` before the parts doc exists (Task C).
 		_, _ = c.log.Append(ctx, sessionID, eventlog.AgentEvent{
 			V: 1, Type: eventlog.EvRunStatus, Status: statusToEvent(outcome.status), Err: outcome.err, RunID: runID,
 		})
 		if h.cancel != nil {
 			h.cancel()
 		}
+
 		// Fire post-run hooks (archive flush, memory extraction, auto-title,
 		// compaction) async, exactly once per run terminal. awaiting-input is not
-		// a terminal for this purpose (firePostRun filters it).
+		// a terminal for this purpose (firePostRun filters it). The archive flush
+		// here is idempotent with the synchronous flush above (same deterministic
+		// _id) and still covers the case where no terminal flusher is wired.
 		c.firePostRun(PostRunInfo{
 			SessionID: sessionID,
 			UserID:    h.UserID,
@@ -472,22 +576,26 @@ func (c *Coordinator) Resume(core *Core, sessionID, userID string, pending *hitl
 	return h, nil
 }
 
-// Status returns the last-known handle for a session owned by userID.
+// Status returns the last-known handle for a session owned by userID. The
+// returned copy carries the per-user Viewed flag (Task B) filled from the
+// ViewedStore.
 func (c *Coordinator) Status(userID, sessionID string) (*RunHandle, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	h, ok := c.known[sessionID]
 	if !ok || (userID != "" && h.UserID != userID) {
+		c.mu.Unlock()
 		return nil, false
 	}
 	cp := *h
+	c.mu.Unlock()
+	cp.Viewed = c.viewedFlag(&cp)
 	return &cp, true
 }
 
-// List returns last-known handles for all sessions owned by userID.
+// List returns last-known handles for all sessions owned by userID. Each copy
+// carries the per-user Viewed flag (Task B).
 func (c *Coordinator) List(userID string) []*RunHandle {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	var out []*RunHandle
 	for sid := range c.byUser[userID] {
 		if h, ok := c.known[sid]; ok {
@@ -495,7 +603,56 @@ func (c *Coordinator) List(userID string) []*RunHandle {
 			out = append(out, &cp)
 		}
 	}
+	c.mu.Unlock()
+	for _, h := range out {
+		h.Viewed = c.viewedFlag(h)
+	}
 	return out
+}
+
+// viewedFlag resolves the per-session viewed flag for a handle copy. Only a
+// hard-terminal (done/error/cancelled) session has meaningful viewed state; a
+// running/queued/awaiting-input session reports false (viewed is irrelevant). A
+// nil store or lookup error reports false (fail-safe: the UI just won't show the
+// unseen ring rather than falsely claiming viewed).
+func (c *Coordinator) viewedFlag(h *RunHandle) bool {
+	if c.viewed == nil {
+		return false
+	}
+	switch h.Status {
+	case RunDone, RunError, RunCancelled:
+	default:
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	v, err := c.viewed.Viewed(ctx, h.SessionID)
+	if err != nil {
+		return false
+	}
+	return v
+}
+
+// MarkViewed marks a session as viewed by its owner (Task B). Ownership is
+// enforced: returns false if the session is unknown or owned by another user
+// (the handler maps that to 404). A nil viewed store makes this a no-op that
+// still reports ownership success.
+func (c *Coordinator) MarkViewed(userID, sessionID string) bool {
+	c.mu.Lock()
+	h, ok := c.known[sessionID]
+	owned := ok && (userID == "" || h.UserID == "" || h.UserID == userID)
+	c.mu.Unlock()
+	if !ok || !owned {
+		return false
+	}
+	if c.viewed != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := c.viewed.MarkViewed(ctx, sessionID); err != nil {
+			c.logger.Warn().Err(err).Str("session", sessionID).Msg("mark viewed failed")
+		}
+	}
+	return true
 }
 
 // Cancel stops an active run for the session. It terminates the run through the
@@ -572,25 +729,57 @@ func statusToEvent(s RunStatus) string {
 
 // sweepLoop periodically evicts idle finished sessions from the coordinator maps
 // and the event log (M1). It never evicts a session with an active run.
+//
+// The tick period is min(evictSweepInterval, sessionRetention): the default 5-min
+// cadence is preserved for the default 1h retention, but a SHORT configured
+// retention (e.g. SESSION_RETENTION=10s) is swept just as promptly so a finished
+// session actually drops from /v1/sessions within ~retention rather than waiting
+// up to 5 minutes. Re-computed each tick so a retention set after construction
+// (SetSessionRetention during bootstrap) takes effect.
 func (c *Coordinator) sweepLoop() {
-	t := time.NewTicker(evictSweepInterval)
+	t := time.NewTimer(c.sweepInterval())
 	defer t.Stop()
 	for {
 		select {
 		case <-t.C:
 			c.sweep()
+			t.Reset(c.sweepInterval())
 		case <-c.stopSweep:
 			return
 		}
 	}
 }
 
-func (c *Coordinator) sweep() {
-	cutoff := c.now().Add(-evictIdleTTL)
+// sweepInterval returns the sweeper tick period: the 5-min default, clamped down
+// to the retention window so short retentions evict promptly.
+func (c *Coordinator) sweepInterval() time.Duration {
 	c.mu.Lock()
+	retention := c.sessionRetention
+	c.mu.Unlock()
+	if retention <= 0 {
+		retention = defaultSessionRetention
+	}
+	if retention < evictSweepInterval {
+		return retention
+	}
+	return evictSweepInterval
+}
+
+func (c *Coordinator) sweep() {
+	c.mu.Lock()
+	retention := c.sessionRetention
+	if retention <= 0 {
+		retention = defaultSessionRetention
+	}
+	cutoff := c.now().Add(-retention)
 	var evict []string
 	for sid, h := range c.known {
 		if _, active := c.active[sid]; active {
+			continue
+		}
+		// A paused HITL run (awaiting-input) is suspended, not finished — it must
+		// stay resumable regardless of age, so never evict it.
+		if h.Status == RunAwaitingInput {
 			continue
 		}
 		if h.UpdatedAt.After(cutoff) {

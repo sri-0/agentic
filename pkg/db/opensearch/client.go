@@ -75,6 +75,19 @@ func (c *Client) CreateIndex(ctx context.Context, index string, mapping json.Raw
 
 // IndexDocument indexes a document. If docID is empty, OpenSearch generates one.
 func (c *Client) IndexDocument(ctx context.Context, index, docID string, body any) (string, error) {
+	return c.indexDocument(ctx, index, docID, body, false)
+}
+
+// IndexDocumentRefresh indexes a document and, when waitForRefresh is true, blocks
+// until the change is visible to search (refresh=wait_for). Used by the terminal
+// archive flush (Task C) so a reload immediately after a run is `done` can search
+// the freshly-written full-parts message doc rather than waiting for the index's
+// periodic refresh (~1s). Prefer the plain IndexDocument for the hot path.
+func (c *Client) IndexDocumentRefresh(ctx context.Context, index, docID string, body any, waitForRefresh bool) (string, error) {
+	return c.indexDocument(ctx, index, docID, body, waitForRefresh)
+}
+
+func (c *Client) indexDocument(ctx context.Context, index, docID string, body any, waitForRefresh bool) (string, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("marshal document: %w", err)
@@ -87,6 +100,9 @@ func (c *Client) IndexDocument(ctx context.Context, index, docID string, body an
 	} else {
 		method = "POST"
 		path = fmt.Sprintf("/%s/_doc", index)
+	}
+	if waitForRefresh {
+		path += "?refresh=wait_for"
 	}
 
 	respBody, err := c.do(ctx, method, path, data)
