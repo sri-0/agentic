@@ -27,6 +27,8 @@ type ThreadMessage struct {
 	Content        string `json:"content" jsonschema_description:"Message content"`
 	Parts          any    `json:"parts,omitempty" jsonschema_description:"Structured message parts (tool calls, etc.)"`
 	Model          string `json:"model,omitempty" jsonschema_description:"Model that generated the message"`
+	AgentID        string `json:"agent_id,omitempty" jsonschema_description:"Agent that produced the message"`
+	DurationMs     int64  `json:"duration_ms,omitempty" jsonschema_description:"Wall-clock duration of the turn in ms"`
 	MessageGroupID string `json:"message_group_id,omitempty" jsonschema_description:"Group ID for edit history"`
 	CreatedAt      string `json:"created_at" jsonschema_description:"ISO 8601 timestamp"`
 }

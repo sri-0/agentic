@@ -371,13 +371,16 @@ func projectLiveMessages(ctx context.Context, coord *agent.Coordinator, threadID
 			createdAt = time.UnixMilli(m.TsMillis).UTC().Format(time.RFC3339)
 		}
 		out = append(out, types.ThreadMessage{
-			ID:        fmt.Sprintf("%s:%d:%s", threadID, m.Turn, m.Role),
-			ThreadID:  threadID,
-			UserID:    userID,
-			Role:      m.Role,
-			Content:   m.Content,
-			Parts:     m.Parts,
-			CreatedAt: createdAt,
+			ID:         fmt.Sprintf("%s:%d:%s", threadID, m.Turn, m.Role),
+			ThreadID:   threadID,
+			UserID:     userID,
+			Role:       m.Role,
+			Content:    m.Content,
+			Parts:      m.Parts,
+			Model:      m.Model,
+			AgentID:    m.AgentID,
+			DurationMs: m.DurationMs,
+			CreatedAt:  createdAt,
 		})
 	}
 	return out, head, nil
@@ -616,6 +619,8 @@ func messageFromHit(hit opensearch.Hit) types.ThreadMessage {
 		Role:           getStr(raw, "role"),
 		Content:        getStr(raw, "content"),
 		Model:          getStr(raw, "model"),
+		AgentID:        getStr(raw, "agent_id"),
+		DurationMs:     getInt64(raw, "duration_ms"),
 		MessageGroupID: getStr(raw, "message_group_id"),
 		CreatedAt:      getStr(raw, "created_at"),
 	}
@@ -632,6 +637,23 @@ func getStr(m map[string]any, key string) string {
 		}
 	}
 	return ""
+}
+
+func getInt64(m map[string]any, key string) int64 {
+	if v, ok := m[key]; ok && v != nil {
+		switch n := v.(type) {
+		case float64:
+			return int64(n)
+		case int64:
+			return n
+		case int:
+			return int64(n)
+		case json.Number:
+			i, _ := n.Int64()
+			return i
+		}
+	}
+	return 0
 }
 
 func getBool(m map[string]any, key string) bool {
