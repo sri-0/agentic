@@ -415,7 +415,12 @@ func Init(ctx context.Context) (*Result, error) {
 	runCoordinator.AddPostRunHook(agent.MemoryExtractorHook(internalReg, sessionService, memorySvc, cfg.AppName, logger))
 	runCoordinator.AddPostRunHook(agent.TitleHook(internalReg, sessionService, osClient, logger))
 	runCoordinator.AddPostRunHook(agent.CompactionTriggerHook(eventLog, 0, logger))
-	logger.Info().Msg("W4 post-run hooks registered (archive, memory-extractor, title, compaction-trigger)")
+	// Early titling: generate the title from the first user message the moment a
+	// run STARTS (async, ChatGPT-style) instead of after the stream finishes. The
+	// post-run TitleHook above stays registered as the idempotent fallback — its
+	// titleUnset guard makes it a no-op once the early title lands.
+	runCoordinator.AddRunStartHook(agent.TitleStartHook(internalReg, sessionService, osClient, logger))
+	logger.Info().Msg("W4 post-run hooks registered (archive, memory-extractor, title + early-title, compaction-trigger)")
 
 	return &Result{
 		Cfg:            cfg,

@@ -69,6 +69,9 @@ func MemoryExtractorHook(reg *internalagents.Registry, sessionSvc session.Servic
 // dependency is nil or the thread already has a user-set title. Fires only on a
 // done run.
 //
+// With TitleStartHook registered this is the idempotent FALLBACK: the early
+// title normally lands mid-run, so the titleUnset guard makes this a no-op.
+//
 // NEEDS LIVE OpenSearch + a model provider to verify end-to-end.
 func TitleHook(reg *internalagents.Registry, sessionSvc session.Service, os *opensearch.Client, logger zerolog.Logger) PostRunHook {
 	log := logger.With().Str("hook", "title").Logger()
@@ -85,25 +88,75 @@ func TitleHook(reg *internalagents.Registry, sessionSvc session.Service, os *ope
 		if !titleUnset(ctx, os, info.SessionID) {
 			return
 		}
-		input := lastUserText(info.Messages)
-		if strings.TrimSpace(input) == "" {
+		generateAndSetTitle(ctx, reg, sessionSvc, os, log, info)
+	}
+}
+
+// TitleStartHook returns a run-START hook (AddRunStartHook) that generates the
+// thread title ASYNC from the turn's user message the moment the run begins —
+// ChatGPT-style, without waiting for the response to finish streaming. The
+// post-run TitleHook stays registered as the idempotent fallback (its
+// titleUnset guard no-ops once this early title lands), so a failed early
+// generation still gets titled at the terminal.
+//
+// The thread doc is upserted asynchronously by SaveUserMessage as the run
+// starts, so at hook time it may not be indexed yet: a not-found read counts as
+// "unset" here (brand-new thread) rather than TitleHook's conservative "don't
+// touch". The title-agent call then gives the doc time to appear before the
+// guarded write.
+func TitleStartHook(reg *internalagents.Registry, sessionSvc session.Service, os *opensearch.Client, logger zerolog.Logger) PostRunHook {
+	log := logger.With().Str("hook", "title_start").Logger()
+	return func(info PostRunInfo) {
+		if reg == nil || sessionSvc == nil || os == nil {
 			return
 		}
-		title, err := reg.Run(ctx, "title", sessionSvc, info.UserID, input)
-		if err != nil {
-			log.Warn().Err(err).Str("session", info.SessionID).Msg("title generation failed")
+		if reg.Get("title") == nil {
 			return
 		}
-		title = cleanTitle(title)
-		if title == "" {
-			return
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// A later turn on an already-titled thread: skip the model call entirely.
+		if hit, err := os.GetDocument(ctx, opensearch.IndexThreads, info.SessionID); err == nil {
+			var doc struct {
+				Title string `json:"title"`
+			}
+			if json.Unmarshal(hit.Source, &doc) == nil {
+				if t := strings.TrimSpace(doc.Title); t != "" && t != "New Chat" {
+					return
+				}
+			}
 		}
-		if err := os.UpdateDocument(ctx, opensearch.IndexThreads, info.SessionID, map[string]any{
-			"title":      title,
-			"updated_at": time.Now().UTC().Format(time.RFC3339),
-		}); err != nil {
-			log.Warn().Err(err).Str("session", info.SessionID).Msg("title update failed")
-		}
+		generateAndSetTitle(ctx, reg, sessionSvc, os, log, info)
+	}
+}
+
+// generateAndSetTitle runs the `title` internal agent over the turn's user
+// message and writes the cleaned result onto the thread doc. It re-checks
+// titleUnset just before writing so a concurrently-set title (user rename, or
+// the start/terminal hook racing each other) is never clobbered.
+func generateAndSetTitle(ctx context.Context, reg *internalagents.Registry, sessionSvc session.Service, os *opensearch.Client, log zerolog.Logger, info PostRunInfo) {
+	input := lastUserText(info.Messages)
+	if strings.TrimSpace(input) == "" {
+		return
+	}
+	title, err := reg.Run(ctx, "title", sessionSvc, info.UserID, input)
+	if err != nil {
+		log.Warn().Err(err).Str("session", info.SessionID).Msg("title generation failed")
+		return
+	}
+	title = cleanTitle(title)
+	if title == "" {
+		return
+	}
+	if !titleUnset(ctx, os, info.SessionID) {
+		return
+	}
+	if err := os.UpdateDocument(ctx, opensearch.IndexThreads, info.SessionID, map[string]any{
+		"title":      title,
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		log.Warn().Err(err).Str("session", info.SessionID).Msg("title update failed")
 	}
 }
 

@@ -108,6 +108,6 @@ func Resume(registry *agent.Registry, coord *agent.Coordinator, logger zerolog.L
 		// the client sees ONLY this continuation's events, and the continuation is
 		// recorded in the log (event-sourced) rather than streamed connection-bound.
 		format := stream.ParseFormat(r.URL.Query().Get("format"))
-		agent.StreamSessionAttach(r.Context(), w, format, coord, req.ThreadID, core.ModelID, core.AgentID, h.StartSeq-1, logger)
+		agent.StreamSessionAttach(r.Context(), w, format, coord, req.ThreadID, core.ModelID, core.AgentID, h.StartSeq-1, h.Turn, logger)
 	}
 }

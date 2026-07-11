@@ -213,7 +213,7 @@ func proxyAISDK(w http.ResponseWriter, baseURL, apiKey string, body []byte, clie
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("x-vercel-ai-ui-message-stream", "v1")
 
-	enc := aisdk.New(stream.NewSSESink(w), model, "")
+	enc := aisdk.New(stream.NewSSESink(w), model, "", "", -1)
 
 	resp, err := proxy.OpenUpstream(baseURL, apiKey, "/chat/completions", body, client)
 	if err != nil {
