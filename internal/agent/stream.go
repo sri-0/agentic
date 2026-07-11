@@ -30,106 +30,25 @@ const artifactToolName = "emit_artifact"
 // list (task_list snapshot) to the UI.
 const todoToolName = "todowrite"
 
-// officeToolNames is the set of office MCP tool names that return a bare file
-// URL. adk's mcptoolset may namespace them (e.g. "office_create_pptx"); we
-// match both the bare and "office_"-prefixed forms.
-var officeToolNames = map[string]bool{
-	"create_pptx":        true,
-	"render_report_docx": true,
-	"create_xlsx":        true,
-}
+// officeArtifactStatePrefix is the StateDelta key prefix under which the mcp
+// office-tool decorator stashes a generated document's kind:file artifact,
+// keyed by tool-call id. It MUST match mcp.OfficeArtifactStatePrefix; kept as a
+// local literal because agent cannot import mcp (import cycle via handler).
+const officeArtifactStatePrefix = "office:artifact:"
 
-// officeMIMEByExt maps office document extensions to their MIME types.
-var officeMIMEByExt = map[string]string{
-	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-}
-
-// isOfficeTool reports whether name is one of the office document tools,
-// tolerating the "office_" namespace prefix adk's mcptoolset may add.
-func isOfficeTool(name string) bool {
-	if officeToolNames[name] {
-		return true
-	}
-	if trimmed := strings.TrimPrefix(name, "office_"); trimmed != name {
-		return officeToolNames[trimmed]
-	}
-	return false
-}
-
-// officeFileURL extracts the file URL from an office tool response. The office
-// MCP tools return a bare URL string; adk's mcptoolset surfaces it wrapped, and
-// the exact shape varies (observed: {"output": {"result": "<url>"}}, also seen
-// {"output": "<url>"} or {"url": "<url>"}). Rather than guess the key, we walk
-// the response looking for the first http(s) string value.
-func officeFileURL(resp map[string]any) string {
-	return firstHTTPURL(resp, 0)
-}
-
-// firstHTTPURL walks maps/slices depth-first and returns the first string value
-// that looks like an http(s) URL. Depth-bounded to avoid pathological nesting.
-func firstHTTPURL(v any, depth int) string {
-	if depth > 8 {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		if strings.HasPrefix(t, "http://") || strings.HasPrefix(t, "https://") {
-			return t
-		}
-	case map[string]any:
-		for _, val := range t {
-			if u := firstHTTPURL(val, depth+1); u != "" {
-				return u
-			}
-		}
-	case []any:
-		for _, val := range t {
-			if u := firstHTTPURL(val, depth+1); u != "" {
-				return u
-			}
-		}
-	}
-	return ""
-}
-
-// officeFileArtifact builds a file-artifact map for an office document tool
-// response, or nil when name/response is not an office document result.
-func officeFileArtifact(name string, resp map[string]any) map[string]any {
-	if !isOfficeTool(name) {
+// officeArtifactFromState returns the file artifact the mcp office-tool decorator
+// stashed on this tool-call event's StateDelta (keyed by tool-call id), or nil
+// when absent. The decorator keeps the file URL out of the model-visible
+// FunctionResponse and puts a fully-formed kind:file artifact here instead, so
+// the card still surfaces without the URL ever reaching the model.
+func officeArtifactFromState(state map[string]any, callID string) map[string]any {
+	if state == nil {
 		return nil
 	}
-	url := officeFileURL(resp)
-	if url == "" {
-		return nil
+	if art, ok := state[officeArtifactStatePrefix+callID].(map[string]any); ok {
+		return art
 	}
-	// Derive filename from the URL tail (strip any query/fragment).
-	filename := url
-	if i := strings.IndexAny(filename, "?#"); i >= 0 {
-		filename = filename[:i]
-	}
-	if i := strings.LastIndexByte(filename, '/'); i >= 0 {
-		filename = filename[i+1:]
-	}
-	mime := "application/octet-stream"
-	if i := strings.LastIndexByte(filename, '.'); i >= 0 {
-		if m, ok := officeMIMEByExt[strings.ToLower(filename[i:])]; ok {
-			mime = m
-		}
-	}
-	id := filename // stable id so re-emits dedupe
-	if id == "" {
-		id = url
-	}
-	return map[string]any{
-		"id":       id,
-		"kind":     "file",
-		"url":      url,
-		"filename": filename,
-		"mime":     mime,
-		"title":    filename,
-	}
+	return nil
 }
 
 // usageTotals holds token counts captured from the ADK run.
@@ -521,9 +440,12 @@ func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID,
 				if fr.Name == artifactToolName {
 					enc.Artifact(fr.Response)
 				}
-				// Office document tools return a bare file URL — surface it as a
-				// file artifact so it lands in the artifact side panel.
-				if art := officeFileArtifact(fr.Name, fr.Response); art != nil {
+				// Office document tools return a bare file URL, which the mcp
+				// decorator strips from the model-visible result and stashes on
+				// this event's StateDelta side-channel (keyed by tool-call id).
+				// Emit it as a file artifact so it lands in the side panel — the
+				// URL never reaches the model.
+				if art := officeArtifactFromState(event.Actions.StateDelta, fr.ID); art != nil {
 					streamLog.Info().Str("tool", fr.Name).Interface("artifact", art).Msg("stream: office file artifact")
 					enc.Artifact(art)
 				}
