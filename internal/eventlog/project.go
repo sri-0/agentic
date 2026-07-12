@@ -52,13 +52,14 @@ type Part struct {
 
 // Part type discriminators mirroring the AI-SDK UIMessage parts array.
 const (
-	PartText        = "text"
-	PartReasoning   = "reasoning"
-	PartDynamicTool = "dynamic-tool"
-	PartArtifact    = "data-artifact"
-	PartTaskList    = "data-task-list"
-	PartAgentStep   = "data-agent-step"
-	PartAgentDelta  = "data-agent-delta"
+	PartText          = "text"
+	PartReasoning     = "reasoning"
+	PartDynamicTool   = "dynamic-tool"
+	PartArtifact      = "data-artifact"
+	PartTaskList      = "data-task-list"
+	PartAgentStep     = "data-agent-step"
+	PartAgentDelta    = "data-agent-delta"
+	PartToolInterrupt = "data-tool-interrupt"
 )
 
 // ProjectMessages folds a session's ordered event sequence into AI-SDK
@@ -112,15 +113,16 @@ type projector struct {
 	messages []ProjectedMessage
 
 	// current assistant message under construction.
-	open      bool
-	parts     []Part
-	content   string
-	openTs    int64          // ts (unix ms) of the first event that opened this message
-	turn      int            // 0-based index of the NEXT flushed assistant message
-	textIdx   int            // index into parts of the open text part, -1 if none
-	rsnIdx    int            // index into parts of the open reasoning part, -1 if none
-	toolIdx   map[string]int // tool call id -> parts index
-	taskParts map[string]int // task-list id -> parts index (last-wins in place)
+	open         bool
+	parts        []Part
+	content      string
+	openTs       int64          // ts (unix ms) of the first event that opened this message
+	turn         int            // 0-based index of the NEXT flushed assistant message
+	textIdx      int            // index into parts of the open text part, -1 if none
+	rsnIdx       int            // index into parts of the open reasoning part, -1 if none
+	toolIdx      map[string]int // tool call id -> parts index
+	taskParts    map[string]int // task-list id -> parts index (last-wins in place)
+	interruptIdx map[string]int // tool call id -> data-tool-interrupt parts index
 }
 
 func (p *projector) ensureOpen(ts int64) {
@@ -135,6 +137,7 @@ func (p *projector) ensureOpen(ts int64) {
 	p.rsnIdx = -1
 	p.toolIdx = map[string]int{}
 	p.taskParts = map[string]int{}
+	p.interruptIdx = map[string]int{}
 }
 
 func (p *projector) fold(ev AgentEvent) {
@@ -235,6 +238,69 @@ func (p *projector) fold(ev AgentEvent) {
 		}
 		p.parts = append(p.parts, Part{Type: PartAgentDelta, ID: agentStepID(ev),
 			Data: map[string]any{"agent": ev.Author, "step": ev.Step, "kind": kind, "delta": ev.Text}})
+
+	case EvQuestion:
+		// HITL / interactive question: fold the SAME two parts the live encoder
+		// emits (aisdk.Encoder.ToolInterrupt) — the interrupted tool call as a
+		// dynamic-tool part and the data-tool-interrupt side channel that drives
+		// the question card — so a session-aware reload of an awaiting-input run
+		// still shows the pending question.
+		if ev.Question == nil {
+			return
+		}
+		p.ensureOpen(ev.Ts)
+		p.textIdx = -1
+		p.rsnIdx = -1
+		q := ev.Question
+		var details any
+		var threadID string
+		if q.Details != nil {
+			details = q.Details["details"]
+			threadID, _ = q.Details["thread_id"].(string)
+		}
+		if _, ok := p.toolIdx[q.ToolCallID]; !ok {
+			p.toolIdx[q.ToolCallID] = len(p.parts)
+			p.parts = append(p.parts, Part{
+				Type: PartDynamicTool, ToolName: q.ToolName, ToolCallID: q.ToolCallID,
+				State: "input-available", Input: details,
+			})
+		}
+		p.interruptIdx[q.ToolCallID] = len(p.parts)
+		p.parts = append(p.parts, Part{Type: PartToolInterrupt, ID: q.ToolCallID, Data: map[string]any{
+			"toolCallId": q.ToolCallID,
+			"toolName":   q.ToolName,
+			"prompt":     q.Prompt,
+			"details":    details,
+			"threadId":   threadID,
+		}})
+
+	case EvHITLResolved:
+		// The question/confirmation was answered and the run resumed. Mark the
+		// interrupt part resolved (so a reload never re-raises an already-answered
+		// question card) and re-surface the originating tool call, mirroring the
+		// live pump (which emits a real ToolCall here).
+		p.ensureOpen(ev.Ts)
+		id := toolCallID(ev)
+		if idx, ok := p.interruptIdx[id]; ok {
+			if data, ok := p.parts[idx].Data.(map[string]any); ok {
+				resolved := KindApproved
+				if ev.Kind == KindDenied {
+					resolved = KindDenied
+				}
+				data["resolved"] = resolved
+			}
+		}
+		if idx, ok := p.toolIdx[id]; ok {
+			p.parts[idx].Input = normalizeArgs(ev)
+		} else {
+			p.textIdx = -1
+			p.rsnIdx = -1
+			p.toolIdx[id] = len(p.parts)
+			p.parts = append(p.parts, Part{
+				Type: PartDynamicTool, ToolName: toolCallName(ev), ToolCallID: id,
+				State: "input-available", Input: normalizeArgs(ev),
+			})
+		}
 
 	case EvRunStatus:
 		// A hard terminal flushes the assistant message; awaiting-input keeps it

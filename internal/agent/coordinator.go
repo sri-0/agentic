@@ -618,7 +618,13 @@ func (c *Coordinator) Resume(core *Core, sessionID, userID string, pending *hitl
 		enc := newEventLogEncoder(runCtx, c.log, sessionID)
 		enc.taskBoards = c.taskBoards
 		// Re-surface the tool call so a fresh reader sees it before the result.
-		enc.put(eventlog.AgentEvent{V: 1, Type: eventlog.EvHITLResolved,
+		// Kind records the decision (approved/denied) so the history projection
+		// marks the folded data-tool-interrupt part resolved with the right badge.
+		resolvedKind := eventlog.KindApproved
+		if !approved {
+			resolvedKind = eventlog.KindDenied
+		}
+		enc.put(eventlog.AgentEvent{V: 1, Type: eventlog.EvHITLResolved, Kind: resolvedKind,
 			Tool: &eventlog.ToolPayload{ID: pending.ToolCallID, Name: pending.ToolName, Args: pending.Details}})
 
 		// Build the confirmation FunctionResponse. ADK marshals Response to JSON

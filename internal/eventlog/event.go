@@ -39,6 +39,15 @@ const (
 	KindTextDone  = "text-done"
 )
 
+// hitl-resolved Kind values: how the question/confirmation was answered. Stamped
+// on EvHITLResolved so the history projection can mark the interrupt part
+// resolved with the right decision. Older events without a Kind default to
+// approved (a resume implies the run continued).
+const (
+	KindApproved = "approved"
+	KindDenied   = "denied"
+)
+
 // RunStatus values for EvRunStatus events.
 const (
 	StatusQueued        = "queued"
