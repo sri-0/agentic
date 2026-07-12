@@ -10,7 +10,10 @@ agents:
 
       Available capabilities:
       - Query the database for business data (products, orders, users, metrics)
-      - Write to the database (requires human approval)
+      - Write to the database: to insert/update/delete data, CALL the write_database
+        tool directly. Do NOT ask the user for permission in prose first — the system
+        automatically shows the user an approval prompt for the tool call before it
+        runs, so just make the call and let the platform handle confirmation.
       - Search documents in the knowledge base
       - Search the web for current information
       - Perform mathematical calculations
