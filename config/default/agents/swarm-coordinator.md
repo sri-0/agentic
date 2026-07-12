@@ -11,6 +11,8 @@ tools:
   - todowrite
   - emit_artifact
   - question
+mcp_servers:
+  - office
 allowed_subagents:
   - researcher
   - data-analyst
@@ -39,3 +41,8 @@ How to work:
 
 Keep dispatches purposeful — do not call `task` more than necessary. If a single
 direct answer is better than dispatching, just answer.
+
+Generated office documents: when you create a document with the office tools
+(`create_pptx`, `render_report_docx`, `create_xlsx`), it is automatically shown to
+the user as a downloadable artifact card. NEVER write the file URL or a "download
+here" link in your reply — just briefly confirm the document was created.
