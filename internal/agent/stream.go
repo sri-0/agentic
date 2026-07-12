@@ -60,12 +60,12 @@ func newEncoder(format stream.Format, sink stream.Sink, requestID string, core *
 }
 
 // StreamAgentRun runs the agent loop with the default (OpenAI) wire format.
-func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
-	StreamAgentRunFormat(ctx, w, stream.FormatOpenAI, core, threadID, messages, saver, logger)
+func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID, userID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+	StreamAgentRunFormat(ctx, w, stream.FormatOpenAI, core, threadID, userID, messages, saver, logger)
 }
 
 // StreamAgentRunFormat runs the agent loop, emitting the chosen wire format.
-func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format stream.Format, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format stream.Format, core *Core, threadID, userID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
 	setStreamHeaders(w, format)
 
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
@@ -92,7 +92,7 @@ func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format str
 
 	// Persist user message
 	if saver != nil {
-		saver.SaveUserMessage(ctx, threadID, "", lastMsg.Content)
+		saver.SaveUserMessage(ctx, threadID, userID, lastMsg.Content)
 	}
 
 	streamEvents(ctx, enc, core, threadID, requestID, userContent, saver, logger)
