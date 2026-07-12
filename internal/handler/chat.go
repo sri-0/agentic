@@ -102,7 +102,7 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			}
 			// Cap max_tokens so the provider does not reserve the model's full
 			// (huge) max output and 402 the request. Honour a smaller client value.
-			body = capMaxTokens(body, openaiproxy.DefaultMaxOutputTokens)
+			body = capMaxTokens(body, int(openaiproxy.MaxOutputTokens()))
 
 			format := stream.ParseFormat(r.URL.Query().Get("format"))
 			logger.Info().Str("model", resolvedModel).Str("upstream", baseURL).Str("format", string(format)).Bool("use_rag", req.UseRAG).Msg("chat: proxying to upstream")
