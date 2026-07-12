@@ -43,7 +43,7 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 	r.HandleFunc("/docs", handler.APIDocs(cfg.AppName)).Methods("GET")
 	r.HandleFunc("/v1/models", handler.Models(cfg)).Methods("GET")
 	r.HandleFunc("/v1/agents", handler.Agents(cfg)).Methods("GET")
-	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, agentConfigs, buildOverrideCore, coord, logger)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, agentConfigs, buildOverrideCore, coord, internalAgents, sessionSvc, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/messages", handler.Messages(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, coord, logger)).Methods("POST", "OPTIONS")

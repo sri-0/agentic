@@ -97,7 +97,7 @@ func TestChatHandler_MultiTurn_SecondTurnStreams(t *testing.T) {
 	reg := newTestRegistry(t, core)
 	coord := agent.NewCoordinator(eventlog.NewMemoryLog(), zerolog.Nop())
 	defer coord.StopSweeper()
-	handler := Chat(reg, core.Config, nil, nil, nil, coord, zerolog.Nop())
+	handler := Chat(reg, core.Config, nil, nil, nil, coord, nil, nil, zerolog.Nop())
 
 	post := func(text string) string {
 		body := `{"model":"test-agent","messages":[{"role":"user","content":"` + text + `"}],"stream":true,"thread_id":"multi-turn-1"}`

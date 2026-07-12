@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -39,41 +40,51 @@ func Route(internalAgents *agents.Registry, cfg *config.Config, sessionSvc sessi
 			http.Error(w, `{"error":"no message"}`, http.StatusBadRequest)
 			return
 		}
-
-		// Build the candidate list from the primary (non-internal) roster.
-		var b strings.Builder
-		b.WriteString("Available agents:\n")
-		fallback := ""
-		if cfg.Agents != nil {
-			for _, a := range cfg.Agents.Agents {
-				if a.Internal {
-					continue
-				}
-				if fallback == "" {
-					fallback = a.ID
-				}
-				b.WriteString("- ")
-				b.WriteString(a.ID)
-				b.WriteString(": ")
-				b.WriteString(a.Description)
-				b.WriteByte('\n')
-			}
-		}
-		b.WriteString("\nUser message: ")
-		b.WriteString(msg)
-		b.WriteString("\n\nBest agent id:")
-
-		chosen := fallback
-		if internalAgents != nil {
-			out, err := internalAgents.Run(r.Context(), "router", sessionSvc, userID, b.String())
-			if err != nil {
-				logger.Warn().Err(err).Msg("route: router agent failed, using fallback")
-			} else if id := normaliseAgentID(out, cfg); id != "" {
-				chosen = id
-			}
-		}
+		chosen := ClassifyAgent(r.Context(), cfg, internalAgents, sessionSvc, userID, msg, logger)
 		writeJSON(w, map[string]any{"agent_id": chosen})
 	}
+}
+
+// ClassifyAgent runs the internal "router" agent to pick the best primary
+// (non-internal) agent for a user message. It builds the candidate roster from
+// cfg.Agents, runs the classifier, sanitises the output with normaliseAgentID
+// (exact then substring match), and falls back to the first non-internal agent
+// when the router is absent, errors, or returns an unusable id. Shared by
+// /v1/route and the agent_id="auto" path in Chat.
+func ClassifyAgent(ctx context.Context, cfg *config.Config, internalAgents *agents.Registry, sessionSvc session.Service, userID, msg string, logger zerolog.Logger) string {
+	// Build the candidate list from the primary (non-internal) roster.
+	var b strings.Builder
+	b.WriteString("Available agents:\n")
+	fallback := ""
+	if cfg.Agents != nil {
+		for _, a := range cfg.Agents.Agents {
+			if a.Internal {
+				continue
+			}
+			if fallback == "" {
+				fallback = a.ID
+			}
+			b.WriteString("- ")
+			b.WriteString(a.ID)
+			b.WriteString(": ")
+			b.WriteString(a.Description)
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("\nUser message: ")
+	b.WriteString(msg)
+	b.WriteString("\n\nBest agent id:")
+
+	chosen := fallback
+	if internalAgents != nil {
+		out, err := internalAgents.Run(ctx, "router", sessionSvc, userID, b.String())
+		if err != nil {
+			logger.Warn().Err(err).Msg("route: router agent failed, using fallback")
+		} else if id := normaliseAgentID(out, cfg); id != "" {
+			chosen = id
+		}
+	}
+	return chosen
 }
 
 // normaliseAgentID extracts a valid agent id from the router's raw output.

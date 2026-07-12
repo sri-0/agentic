@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"agentic/internal/agent"
+	"agentic/internal/agents"
 	"agentic/internal/chat"
 	"agentic/internal/config"
 	"agentic/internal/proxy"
@@ -22,9 +23,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"google.golang.org/adk/session"
 )
 
-func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, coord *agent.Coordinator, logger zerolog.Logger) http.HandlerFunc {
+func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, coord *agent.Coordinator, internalAgents *agents.Registry, sessionSvc session.Service, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -63,6 +65,18 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 
 		// Prefer an explicit agent selector while preserving legacy model=agent routing.
 		explicitAgentID := req.RouteAgentID()
+
+		// "auto" is the UI's classifier sentinel: resolve it to a concrete primary
+		// agent via the shared router/classifier BEFORE anything else, so the rest of
+		// the pipeline (registry.Get, override-core, streaming, metadata.agentId)
+		// operates on the picked agent with no extra round-trip. On classifier
+		// failure ClassifyAgent already falls back to the first non-internal agent.
+		if explicitAgentID == "auto" {
+			resolved := ClassifyAgent(r.Context(), cfg, internalAgents, sessionSvc, UserID(r), lastUserContent(messages), logger)
+			logger.Info().Str("routed_agent_id", resolved).Msg("chat: auto-routed to agent")
+			explicitAgentID = resolved
+		}
+
 		agentID := explicitAgentID
 		if agentID == "" {
 			agentID = req.Model
