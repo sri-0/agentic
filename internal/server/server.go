@@ -26,6 +26,13 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 	r.Use(corsMiddleware)
 	r.Use(loggingMiddleware(logger))
 
+	// Global CORS preflight handler: match OPTIONS on ANY path so the (route-
+	// scoped) corsMiddleware runs and returns the preflight headers. Without
+	// this, a preflight to a GET-only route (e.g. /v1/models — the frontend's
+	// X-User-ID header makes even GETs non-simple) matches no route and 405s,
+	// which the browser reports as a CORS error.
+	r.PathPrefix("/").Methods(http.MethodOptions).HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+
 	r.HandleFunc("/health", handler.Health(registry)).Methods("GET")
 	specCfg := oa.SpecConfig{
 		Title:       cfg.AppName,
@@ -49,6 +56,7 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 		r.HandleFunc("/v1/sessions/{id}", handler.SessionStatus(coord)).Methods("GET")
 		r.HandleFunc("/v1/sessions/{id}/stream", handler.SessionStream(coord, logger)).Methods("GET")
 		r.HandleFunc("/v1/sessions/{id}/cancel", handler.SessionCancel(coord, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/sessions/{id}/viewed", handler.SessionMarkViewed(coord, logger)).Methods("POST", "OPTIONS")
 	}
 
 	// MCP: list configured servers with per-user status, and drive the

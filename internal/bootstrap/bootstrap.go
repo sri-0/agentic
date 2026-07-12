@@ -282,6 +282,17 @@ func Init(ctx context.Context) (*Result, error) {
 	runCoordinator := agent.NewCoordinator(compositeLog, logger)
 	// Task 4: per-session task board cache (Redis when configured, else in-memory).
 	runCoordinator.SetTaskBoardStore(agent.NewTaskBoardStore(cfg, logger))
+	// Task A: configurable finished/idle session retention (SESSION_RETENTION).
+	runCoordinator.SetSessionRetention(cfg.SessionRetention)
+	logger.Info().Dur("session_retention", cfg.SessionRetention).Msg("session retention configured")
+	// Task B: per-session per-user viewed flag (Redis when configured, else in-memory).
+	runCoordinator.SetViewedStore(agent.NewViewedStore(cfg, logger))
+	// Task C: the terminal turn's full-parts messages are flushed SYNCHRONOUSLY
+	// (bounded) inside terminate before the run leaves active, so a reload right
+	// after `done` sees tool parts. FlushWaitRefresh blocks until the message doc
+	// is searchable (refresh=wait_for), and the deterministic _id makes it
+	// idempotent with the later async ArchiveHook re-flush.
+	runCoordinator.SetTerminalFlusher(agent.TerminalFlusherFunc(archiver.FlushWaitRefresh), cfg.AppName)
 
 	// Swarm dispatch: the task tool runs a chosen subagent (from the typed
 	// registry) as a child session via its own Runner, streaming the child's
