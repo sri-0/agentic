@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"agentic/pkg/memory"
@@ -69,7 +70,18 @@ func MemoriesAdd(svc *memory.Service, logger zerolog.Logger) http.HandlerFunc {
 		}
 
 		id, err := svc.Add(r.Context(), req.AppName, req.UserID, req.Content)
-		if err != nil {
+		switch {
+		case errors.Is(err, memory.ErrDuplicateMemory):
+			// Near-duplicate of an existing memory: no new document created.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"id": id, "status": "duplicate"})
+			return
+		case errors.Is(err, memory.ErrJunkMemory):
+			// Empty/negative/unknown fact — not persisted.
+			http.Error(w, `{"error":"content is empty or a negative/unknown fact"}`, http.StatusUnprocessableEntity)
+			return
+		case err != nil:
 			logger.Error().Err(err).Msg("memory add failed")
 			http.Error(w, `{"error":"add failed"}`, http.StatusInternalServerError)
 			return
