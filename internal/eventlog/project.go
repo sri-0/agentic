@@ -316,6 +316,17 @@ func artifactData(m map[string]any) map[string]any {
 	if lang := strOf(m, "language"); lang != "" {
 		data["language"] = lang
 	}
+	// File artifacts (e.g. office documents) carry a URL/filename/mime instead
+	// of inline content.
+	if url := strOf(m, "url"); url != "" {
+		data["url"] = url
+	}
+	if fn := strOf(m, "filename"); fn != "" {
+		data["filename"] = fn
+	}
+	if mime := strOf(m, "mime"); mime != "" {
+		data["mime"] = mime
+	}
 	return data
 }
 
