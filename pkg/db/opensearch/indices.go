@@ -10,8 +10,9 @@ const (
 	IndexPrompts    = "prompts"
 	IndexThreads    = "threads"
 	IndexMessages   = "messages"
-	IndexSkills     = "skills"
-	IndexMemories   = "memories"
+	IndexSkills        = "skills"
+	IndexMemories      = "memories"
+	IndexSessionEvents = "session_events"
 
 	// Default vector dimension (intfloat/multilingual-e5-large).
 	DefaultVectorDimension = 1024
@@ -90,7 +91,7 @@ var MessagesMapping = json.RawMessage(`{
 			"user_id":          { "type": "keyword" },
 			"role":             { "type": "keyword" },
 			"content":          { "type": "text" },
-			"parts":            { "type": "text", "index": false },
+			"parts":            { "type": "object", "enabled": false },
 			"model":            { "type": "keyword" },
 			"message_group_id": { "type": "keyword" },
 			"created_at":       { "type": "date" }
@@ -141,8 +142,31 @@ var MemoriesMapping = json.RawMessage(`{
 	}
 }`)
 
+// SessionEventsMapping is the durable cold-archive of a session's raw event log,
+// flushed on terminal run status for replay after the Redis TTL expires. seq is
+// the per-session gap-free sequence; payload holds the full AgentEvent JSON and
+// is NOT indexed (enabled:false) — it's read back and re-projected, never queried
+// by its inner fields.
+var SessionEventsMapping = json.RawMessage(`{
+	"mappings": {
+		"properties": {
+			"app_name":   { "type": "keyword" },
+			"user_id":    { "type": "keyword" },
+			"session_id": { "type": "keyword" },
+			"seq":        { "type": "long" },
+			"type":       { "type": "keyword" },
+			"ts":         { "type": "long" },
+			"author":     { "type": "keyword" },
+			"payload":    { "type": "object", "enabled": false }
+		}
+	}
+}`)
+
 // EnsureIndices creates all indices if they don't exist.
 func EnsureIndices(ctx context.Context, client *Client) error {
+	if err := client.CreateIndex(ctx, IndexSessionEvents, SessionEventsMapping); err != nil {
+		return err
+	}
 	if err := client.CreateIndex(ctx, IndexEmbeddings, EmbeddingsMapping); err != nil {
 		return err
 	}

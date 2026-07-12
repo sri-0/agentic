@@ -11,10 +11,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"agentic/internal/agent"
 	"agentic/internal/config"
+	"agentic/internal/eventlog"
 	"agentic/internal/hitl"
+	"agentic/internal/types"
 
 	"github.com/rs/zerolog"
 	adkagent "google.golang.org/adk/agent"
@@ -105,7 +108,7 @@ func makeTextAgent(t *testing.T) adkagent.Agent {
 func TestChatHandler_AgentMode_StreamsSSE(t *testing.T) {
 	core := newTestCore(t, makeTextAgent(t))
 	reg := newTestRegistry(t, core)
-	handler := Chat(reg, core.Config, nil, nil, nil, zerolog.Nop())
+	handler := Chat(reg, core.Config, nil, nil, nil, nil, nil, nil, zerolog.Nop())
 
 	body := `{"model":"test-agent","messages":[{"role":"user","content":"hi"}],"stream":true,"thread_id":"t1"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
@@ -177,7 +180,7 @@ func TestChatHandler_ProxyMode(t *testing.T) {
 	}
 
 	reg := newTestRegistry(t, core)
-	handler := Chat(reg, core.Config, nil, nil, nil, zerolog.Nop())
+	handler := Chat(reg, core.Config, nil, nil, nil, nil, nil, nil, zerolog.Nop())
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
@@ -200,7 +203,7 @@ func TestChatHandler_ProxyMode(t *testing.T) {
 func TestChatHandler_RejectsEmptyMessages(t *testing.T) {
 	core := newTestCore(t, makeTextAgent(t))
 	reg := newTestRegistry(t, core)
-	handler := Chat(reg, core.Config, nil, nil, nil, zerolog.Nop())
+	handler := Chat(reg, core.Config, nil, nil, nil, nil, nil, nil, zerolog.Nop())
 
 	body := `{"model":"test-agent","messages":[]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
@@ -253,41 +256,80 @@ func TestResumeHandler(t *testing.T) {
 		Details:            map[string]any{"table": "users"},
 	})
 
-	handler := Resume(reg, zerolog.Nop())
+	coord := agent.NewCoordinator(eventlog.NewMemoryLog(), zerolog.Nop())
+	defer coord.StopSweeper()
+	// Seed a known session owned by the requesting user (anonymous) so the resume
+	// ownership gate (H2) passes and the continuation can attach to the log.
+	if _, err := coord.Start(agent.RunRequest{
+		SessionID: "thread-resume",
+		UserID:    DefaultUserID,
+		Core:      core,
+		Messages:  []types.ChatMessage{{Role: "user", Content: "seed"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the seed run to leave the active state so Resume isn't rejected as
+	// "run already active".
+	waitForIdle(t, coord, "thread-resume")
 
+	handler := Resume(reg, coord, zerolog.Nop())
+
+	// Resume streams via session-follow (stays live until the client disconnects),
+	// so drive it with a cancellable context.
+	ctx, cancel := context.WithCancel(context.Background())
 	body := `{"thread_id":"thread-resume","action":"approved"}`
-	req := httptest.NewRequest("POST", "/v1/agent/resume", bytes.NewBufferString(body))
+	req := httptest.NewRequest("POST", "/v1/agent/resume", bytes.NewBufferString(body)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	handler.ServeHTTP(w, req)
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(w, req)
+		close(done)
+	}()
+	// The continuation re-surfaces the tool call, streams the agent reply, and
+	// terminates; give it a moment then disconnect the follower.
+	<-time.After(300 * time.Millisecond)
+	cancel()
+	<-done
 
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify SSE stream contains synthetic tool call before text
+	// Verify the re-surfaced tool call (EvHITLResolved) appears in the stream (M3).
 	bodyStr := w.Body.String()
-	if !strings.Contains(bodyStr, "data: [DONE]") {
-		t.Error("expected [DONE] sentinel")
-	}
 	if !strings.Contains(bodyStr, "write_database") {
-		t.Error("expected synthetic tool_call with write_database in resume stream")
-	}
-	if !strings.Contains(bodyStr, "tool_calls") {
-		t.Error("expected finish_reason tool_calls in resume stream")
+		t.Errorf("expected re-surfaced tool_call with write_database in resume stream: %q", bodyStr)
 	}
 
-	// Verify interrupt was cleared
+	// Verify interrupt was cleared.
 	if pending, _ := core.Interrupts.Get("thread-resume"); pending != nil {
 		t.Error("expected pending interrupt to be cleared after resume")
 	}
 }
 
+// waitForIdle blocks until the coordinator no longer reports the session as
+// running/queued (its background run has terminated), or fails after a timeout.
+func waitForIdle(t *testing.T, coord *agent.Coordinator, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if h, ok := coord.Status(DefaultUserID, sessionID); ok &&
+			h.Status != agent.RunRunning && h.Status != agent.RunQueued {
+			return
+		}
+		<-time.After(10 * time.Millisecond)
+	}
+	t.Fatalf("session %s did not become idle", sessionID)
+}
+
 func TestResumeHandler_NoPending(t *testing.T) {
 	core := newTestCore(t, makeTextAgent(t))
 	reg := newTestRegistry(t, core)
-	handler := Resume(reg, zerolog.Nop())
+	coord := agent.NewCoordinator(eventlog.NewMemoryLog(), zerolog.Nop())
+	defer coord.StopSweeper()
+	handler := Resume(reg, coord, zerolog.Nop())
 
 	body := `{"thread_id":"nonexistent","action":"approved"}`
 	req := httptest.NewRequest("POST", "/v1/agent/resume", bytes.NewBufferString(body))

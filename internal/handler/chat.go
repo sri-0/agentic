@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"agentic/internal/agent"
+	"agentic/internal/agents"
 	"agentic/internal/chat"
 	"agentic/internal/config"
 	"agentic/internal/proxy"
@@ -15,12 +18,15 @@ import (
 	"agentic/internal/stream/aisdk"
 	"agentic/internal/types"
 	"agentic/pkg/db/opensearch"
+	openaiproxy "agentic/pkg/genai/openai"
+	pkgmemory "agentic/pkg/memory"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"google.golang.org/adk/session"
 )
 
-func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, logger zerolog.Logger) http.HandlerFunc {
+func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, coord *agent.Coordinator, internalAgents *agents.Registry, sessionSvc session.Service, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawBody, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -59,6 +65,18 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 
 		// Prefer an explicit agent selector while preserving legacy model=agent routing.
 		explicitAgentID := req.RouteAgentID()
+
+		// "auto" is the UI's classifier sentinel: resolve it to a concrete primary
+		// agent via the shared router/classifier BEFORE anything else, so the rest of
+		// the pipeline (registry.Get, override-core, streaming, metadata.agentId)
+		// operates on the picked agent with no extra round-trip. On classifier
+		// failure ClassifyAgent already falls back to the first non-internal agent.
+		if explicitAgentID == "auto" {
+			resolved := ClassifyAgent(r.Context(), cfg, internalAgents, sessionSvc, UserID(r), lastUserContent(messages), logger)
+			logger.Info().Str("routed_agent_id", resolved).Msg("chat: auto-routed to agent")
+			explicitAgentID = resolved
+		}
+
 		agentID := explicitAgentID
 		if agentID == "" {
 			agentID = req.Model
@@ -96,6 +114,9 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			if err != nil {
 				body = rawBody
 			}
+			// Cap max_tokens so the provider does not reserve the model's full
+			// (huge) max output and 402 the request. Honour a smaller client value.
+			body = capMaxTokens(body, int(openaiproxy.MaxOutputTokens()))
 
 			format := stream.ParseFormat(r.URL.Query().Get("format"))
 			logger.Info().Str("model", resolvedModel).Str("upstream", baseURL).Str("format", string(format)).Bool("use_rag", req.UseRAG).Msg("chat: proxying to upstream")
@@ -138,6 +159,17 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			}
 		}
 
+		// Capture the RAW last-user text BEFORE memory recall augments it, so the
+		// persisted/reloaded user bubble is exactly what the user typed (the model
+		// still receives the augmented content). Bug B fix.
+		rawUserText := lastUserContent(messages)
+
+		// kNN long-term memory recall injection (per-user): before the agent run,
+		// pull the most relevant durable memories for this user and prepend them to
+		// the last user message so the agent has cross-session recall. No-op when
+		// OpenSearch is absent or nothing is recalled (degradation-safe).
+		messages = injectMemoryRecall(r.Context(), cfg, osClient, UserID(r), messages, logger)
+
 		threadID := req.ThreadID
 		persistThread := threadID != "" && !req.Temporary
 		if threadID == "" {
@@ -162,10 +194,24 @@ func Chat(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Cli
 			Msg("chat: routing to agent")
 
 		if !isStream {
-			agent.NonStreamAgentRun(r.Context(), w, core, threadID, messages, saver, logger)
+			// M6: route stream:false through the coordinator too so every turn is
+			// durable/event-sourced (not just streaming turns). Falls back to the
+			// direct run only when no coordinator is wired. Response shape is the
+			// identical OpenAI ChatCompletion JSON either way.
+			if coord != nil {
+				agent.NonStreamAgentRunCoordinated(r.Context(), w, coord, core, threadID, UserID(r), messages, rawUserText, saver, logger)
+			} else {
+				agent.NonStreamAgentRun(r.Context(), w, core, threadID, UserID(r), messages, saver, logger)
+			}
 		} else {
 			format := stream.ParseFormat(r.URL.Query().Get("format"))
-			agent.StreamAgentRunFormat(r.Context(), w, format, core, threadID, messages, saver, logger)
+			if coord != nil {
+				// Background, connection-decoupled run: the run continues even if
+				// this client disconnects; reconnect via /v1/sessions/{id}/stream.
+				agent.StreamAgentRunBackground(r.Context(), w, format, coord, core, threadID, UserID(r), messages, rawUserText, saver, logger)
+			} else {
+				agent.StreamAgentRunFormat(r.Context(), w, format, core, threadID, UserID(r), messages, saver, logger)
+			}
 		}
 	}
 }
@@ -181,13 +227,15 @@ func proxyAISDK(w http.ResponseWriter, baseURL, apiKey string, body []byte, clie
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("x-vercel-ai-ui-message-stream", "v1")
 
-	enc := aisdk.New(stream.NewSSESink(w), model, "")
+	enc := aisdk.New(stream.NewSSESink(w), model, "", "", -1)
 
 	resp, err := proxy.OpenUpstream(baseURL, apiKey, "/chat/completions", body, client)
 	if err != nil {
+		// A failed upstream request is an ERROR, not a normal completion: surface
+		// it as an error part so the run does not render as a "Completed" assistant
+		// message containing the raw error text.
 		enc.RunStarted()
-		enc.Text("Upstream request failed: " + err.Error())
-		enc.RunFinished(stream.Usage{})
+		enc.RunFailed("Upstream request failed: " + err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -195,11 +243,82 @@ func proxyAISDK(w http.ResponseWriter, baseURL, apiKey string, body []byte, clie
 		raw, _ := io.ReadAll(resp.Body)
 		logger.Warn().Int("status", resp.StatusCode).Str("body", string(raw)).Msg("chat: upstream error (aisdk proxy)")
 		enc.RunStarted()
-		enc.Text(upstreamErrorText(raw))
-		enc.RunFinished(stream.Usage{})
+		enc.RunFailed(upstreamErrorText(raw))
 		return
 	}
 	stream.PumpOpenAI(resp.Body, enc, model)
+}
+
+// injectMemoryRecall queries the per-user long-term memory store (OpenSearch
+// kNN, text-fallback) for memories relevant to the last user message and
+// prepends them to that message as a "Relevant memories" block. It is additive
+// and degradation-safe: a nil OpenSearch client, an empty query, or no results
+// returns the messages unchanged.
+//
+// NEEDS LIVE OpenSearch (and an embedding route for the kNN path) to verify
+// recall end-to-end; the wiring compiles and no-ops without them.
+func injectMemoryRecall(ctx context.Context, cfg *config.Config, osClient *opensearch.Client, userID string, messages []types.ChatMessage, logger zerolog.Logger) []types.ChatMessage {
+	if osClient == nil || len(messages) == 0 || userID == "" {
+		return messages
+	}
+	lastIdx := len(messages) - 1
+	if messages[lastIdx].Role != "user" || messages[lastIdx].Content == "" {
+		return messages
+	}
+	svc := pkgmemory.NewService(osClient, cfg, logger)
+	entries, err := svc.Search(ctx, cfg.AppName, userID, messages[lastIdx].Content, 5)
+	if err != nil || len(entries) == 0 {
+		return messages
+	}
+	var b strings.Builder
+	b.WriteString("Relevant memories about the user (from previous sessions):\n")
+	for _, e := range entries {
+		b.WriteString("- ")
+		b.WriteString(e.Content)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(messages[lastIdx].Content)
+
+	out := make([]types.ChatMessage, len(messages))
+	copy(out, messages)
+	out[lastIdx] = types.ChatMessage{Role: messages[lastIdx].Role, Content: b.String()}
+	logger.Info().Int("memories", len(entries)).Msg("chat: long-term memory recall injected")
+	return out
+}
+
+// lastUserContent returns the content of the last user message, or "" if none.
+// Used to capture the raw user text before any augmentation (memory recall).
+func lastUserContent(messages []types.ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+// capMaxTokens ensures the outbound request body carries a max_tokens no larger
+// than cap. Without an explicit value, OpenRouter reserves the model's full max
+// output (e.g. 64000 for Claude Sonnet 4.5), which 402s on modest-credit
+// accounts before a single token streams. A client-supplied smaller value is
+// preserved. Returns body unchanged if it can't be parsed.
+func capMaxTokens(body []byte, cap int) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	if v, ok := m["max_tokens"]; ok {
+		if n, ok := v.(float64); ok && n > 0 && int(n) <= cap {
+			return body // client asked for a smaller cap; honour it
+		}
+	}
+	m["max_tokens"] = cap
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func upstreamErrorText(raw []byte) string {

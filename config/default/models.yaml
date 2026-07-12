@@ -105,9 +105,9 @@ providers:
           tokenizer: o200k_base
           instruct_type: none
 
-      - id: openai/o1-mini
+      - id: openai/o4-mini
         type: llm
-        name: o1 Mini
+        name: o4-mini
         owned_by: openai
         description: Fast reasoning model for STEM tasks.
         released_at: 2024-09-12
@@ -165,22 +165,6 @@ providers:
           tokenizer: o200k_base
           instruct_type: none
 
-      - id: openai/o4-mini
-        type: llm
-        name: o4 Mini
-        owned_by: openai
-        description: Latest compact reasoning model.
-        released_at: 2025-04-16
-        context_length: 200000
-        capabilities: [tool_calling, vision, reasoning, streaming]
-        supported_parameters: [max_tokens, temperature, reasoning_effort]
-        architecture:
-          input_modalities: [text, image]
-          output_modalities: [text]
-          tokenizer: o200k_base
-          instruct_type: none
-
-      # ── Anthropic ───────────────────────────────────────────────────────
       - id: anthropic/claude-sonnet-4
         type: llm
         name: Claude Sonnet 4
@@ -209,9 +193,9 @@ providers:
           tokenizer: claude
           instruct_type: none
 
-      - id: anthropic/claude-3.5-sonnet
+      - id: anthropic/claude-sonnet-4.5
         type: llm
-        name: Claude 3.5 Sonnet
+        name: Claude Sonnet 4.5
         owned_by: anthropic
         description: High performance Claude 3.5 model.
         released_at: 2024-10-22
@@ -223,9 +207,9 @@ providers:
           tokenizer: claude
           instruct_type: none
 
-      - id: anthropic/claude-3.5-haiku
+      - id: anthropic/claude-haiku-4.5
         type: llm
-        name: Claude 3.5 Haiku
+        name: Claude Haiku 4.5
         owned_by: anthropic
         description: Fast and affordable Claude model.
         released_at: 2024-11-04
@@ -252,7 +236,7 @@ providers:
           tokenizer: gemini
           instruct_type: none
 
-      - id: google/gemini-2.5-flash-preview
+      - id: google/gemini-2.5-flash
         type: llm
         name: Gemini 2.5 Flash
         owned_by: google
@@ -266,9 +250,9 @@ providers:
           tokenizer: gemini
           instruct_type: none
 
-      - id: google/gemini-2.0-flash-001
+      - id: google/gemini-2.5-flash-lite
         type: llm
-        name: Gemini 2.0 Flash
+        name: Gemini 2.5 Flash Lite
         owned_by: google
         description: Fast and efficient Gemini model.
         released_at: 2025-02-05
@@ -280,9 +264,9 @@ providers:
           tokenizer: gemini
           instruct_type: none
 
-      - id: google/gemini-2.0-flash-lite-001
+      - id: google/gemini-3-flash-preview
         type: llm
-        name: Gemini 2.0 Flash Lite
+        name: Gemini 3 Flash (Preview)
         owned_by: google
         description: Lightest Gemini model for high-throughput tasks.
         released_at: 2025-02-27
@@ -329,20 +313,6 @@ providers:
         owned_by: meta
         description: Strong open-weight model for general tasks.
         released_at: 2024-12-06
-        context_length: 131072
-        capabilities: [tool_calling, streaming]
-        architecture:
-          input_modalities: [text]
-          output_modalities: [text]
-          tokenizer: llama3
-          instruct_type: llama3
-
-      - id: meta-llama/llama-3.1-405b-instruct
-        type: llm
-        name: Llama 3.1 405B
-        owned_by: meta
-        description: Largest open-weight Llama model.
-        released_at: 2024-07-23
         context_length: 131072
         capabilities: [tool_calling, streaming]
         architecture:
@@ -480,9 +450,9 @@ providers:
           instruct_type: chatml
 
       # ── Mistral ─────────────────────────────────────────────────────────
-      - id: mistralai/mistral-large-2411
+      - id: mistralai/mistral-large-2512
         type: llm
-        name: Mistral Large
+        name: Mistral Large 2512
         owned_by: mistral
         description: Mistral's flagship model.
         released_at: 2024-11-20
@@ -508,9 +478,9 @@ providers:
           tokenizer: mistral
           instruct_type: mistral
 
-      - id: mistralai/codestral-2501
+      - id: mistralai/codestral-2508
         type: llm
-        name: Codestral
+        name: Codestral 2508
         owned_by: mistral
         description: Specialized coding model from Mistral.
         released_at: 2025-01-29
@@ -523,9 +493,9 @@ providers:
           instruct_type: mistral
 
       # ── Cohere ──────────────────────────────────────────────────────────
-      - id: cohere/command-r-plus
+      - id: cohere/command-r-plus-08-2024
         type: llm
-        name: Command R+
+        name: Command R+ (08-2024)
         owned_by: cohere
         description: Cohere's most capable model for RAG and enterprise.
         released_at: 2024-04-04
@@ -537,9 +507,9 @@ providers:
           tokenizer: cohere
           instruct_type: cohere
 
-      - id: cohere/command-r
+      - id: cohere/command-r-08-2024
         type: llm
-        name: Command R
+        name: Command R (08-2024)
         owned_by: cohere
         description: Balanced Cohere model for RAG.
         released_at: 2024-03-14
@@ -566,9 +536,9 @@ providers:
           instruct_type: cohere
 
       # ── xAI ─────────────────────────────────────────────────────────────
-      - id: x-ai/grok-3-beta
+      - id: x-ai/grok-4.5
         type: llm
-        name: Grok 3 Beta
+        name: Grok 4.5
         owned_by: xai
         description: xAI's most capable model.
         released_at: 2025-02-18
@@ -580,9 +550,9 @@ providers:
           tokenizer: grok
           instruct_type: none
 
-      - id: x-ai/grok-3-mini-beta
+      - id: x-ai/grok-4.20
         type: llm
-        name: Grok 3 Mini Beta
+        name: Grok 4.20
         owned_by: xai
         description: Fast reasoning model from xAI.
         released_at: 2025-02-18
@@ -594,9 +564,9 @@ providers:
           tokenizer: grok
           instruct_type: none
 
-      - id: x-ai/grok-2-1212
+      - id: x-ai/grok-4.3
         type: llm
-        name: Grok 2
+        name: Grok 4.3
         owned_by: xai
         description: Previous generation Grok model.
         released_at: 2024-12-12
@@ -652,21 +622,6 @@ providers:
           tokenizer: phi
           instruct_type: chatml
 
-      - id: microsoft/mai-ds-r1
-        type: llm
-        name: MAI DS R1
-        owned_by: microsoft
-        description: Microsoft's distilled reasoning model based on DeepSeek R1.
-        released_at: 2025-04-21
-        context_length: 131072
-        capabilities: [reasoning, streaming]
-        architecture:
-          input_modalities: [text]
-          output_modalities: [text]
-          tokenizer: deepseek
-          instruct_type: deepseek
-
-      # ── Embedding Models ──────────────────────────────────────────────
       - id: intfloat/multilingual-e5-large
         type: embedding
         name: Multilingual E5 Large

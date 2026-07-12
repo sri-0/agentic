@@ -18,7 +18,7 @@ import (
 
 // NonStreamAgentRun executes the agent and returns a standard ChatCompletion JSON response.
 // If saver is non-nil, user and assistant messages are persisted to the thread.
-func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID, userID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
 
 	runLog := logger.With().Str("thread_id", threadID).Str("agent_id", core.AgentID).Logger()
@@ -34,9 +34,9 @@ func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, t
 	lastMsg := messages[len(messages)-1]
 	userContent := genai.NewContentFromText(lastMsg.Content, genai.RoleUser)
 
-	// Persist user message
+	// Persist user message (no coordinator turn on this legacy path → random id)
 	if saver != nil {
-		saver.SaveUserMessage(ctx, threadID, lastMsg.Content)
+		saver.SaveUserMessage(ctx, threadID, userID, lastMsg.Content, -1)
 	}
 
 	var textContent string

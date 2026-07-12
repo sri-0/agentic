@@ -1,11 +1,15 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
+	"agentic/internal/agent"
+	"agentic/internal/eventlog"
 	"agentic/internal/types"
 	"agentic/pkg/db/opensearch"
 
@@ -14,13 +18,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// getUserID extracts the user ID from the request.
-// Currently uses X-User-ID header; will be replaced with JWT extraction.
+// getUserID extracts the user ID from the request. Delegates to the shared
+// identity seam (handler.UserID); kept as a thin alias for existing callers.
 func getUserID(r *http.Request) string {
-	if userID := r.Header.Get("X-User-ID"); userID != "" {
-		return userID
-	}
-	return "anonymous"
+	return UserID(r)
 }
 
 // ThreadsList returns all threads for the authenticated user, ordered by pinned then updated_at.
@@ -127,6 +128,7 @@ func ThreadsCreate(osClient *opensearch.Client, logger zerolog.Logger) http.Hand
 func ThreadsGet(osClient *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := mux.Vars(r)["id"]
+		userID := getUserID(r)
 
 		hit, err := osClient.GetDocument(r.Context(), opensearch.IndexThreads, id)
 		if err != nil {
@@ -136,6 +138,12 @@ func ThreadsGet(osClient *opensearch.Client, logger zerolog.Logger) http.Handler
 		}
 
 		thread := threadFromHit(*hit)
+		// Ownership gate: a thread id alone must not expose another user's thread.
+		// Return 404 (not 403) so existence isn't disclosed.
+		if thread.UserID != "" && thread.UserID != userID {
+			http.Error(w, `{"error":"thread not found"}`, http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(thread)
 	}
@@ -212,7 +220,18 @@ func ThreadsDelete(osClient *opensearch.Client, logger zerolog.Logger) http.Hand
 }
 
 // ThreadsMessagesList returns all messages for a thread, ordered by created_at.
-func ThreadsMessagesList(osClient *opensearch.Client, logger zerolog.Logger) http.HandlerFunc {
+//
+// SESSION-AWARE: when the coordinator reports an ACTIVE run (running /
+// awaiting-input / queued) for this thread owned by the requesting user, the
+// current event log is folded via eventlog.ProjectMessages and merged over the
+// archived rows, so the response includes the in-progress assistant turn FULLY
+// FOLDED (same id/role/content/parts spec as a finished turn — the deterministic
+// {session}:{turn}:{role} ids make the merge an in-place upsert). The response
+// is then wrapped as {"data": [...], "live": {"head_seq", "turn", "status"}}:
+// head_seq is the last event-log sequence folded into the payload, so a client
+// can attach the live stream at exactly ?after=head_seq — tail only, no
+// gap/overlap. Threads with no active run keep the plain-array wire shape.
+func ThreadsMessagesList(osClient *opensearch.Client, coord *agent.Coordinator, logger zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		threadID := r.URL.Query().Get("chatId")
 		if threadID == "" {
@@ -222,37 +241,178 @@ func ThreadsMessagesList(osClient *opensearch.Client, logger zerolog.Logger) htt
 			http.Error(w, `{"error":"missing thread id"}`, http.StatusBadRequest)
 			return
 		}
+		userID := getUserID(r)
 
+		// Scope by BOTH thread_id AND user_id so a user can only read their own
+		// thread's messages — a thread id alone must not leak another user's
+		// conversation (mirrors the ownership policy in sessions.go).
 		query := map[string]any{
 			"size": 1000,
 			"query": map[string]any{
-				"term": map[string]any{"thread_id": threadID},
+				"bool": map[string]any{
+					"must": []any{
+						map[string]any{"term": map[string]any{"thread_id": threadID}},
+						map[string]any{"term": map[string]any{"user_id": userID}},
+					},
+				},
 			},
 			"sort": []any{
 				map[string]any{"created_at": map[string]any{"order": "asc"}},
 			},
 		}
 
+		messages := make([]types.ThreadMessage, 0)
 		resp, err := osClient.Search(r.Context(), opensearch.IndexMessages, query)
 		if err != nil {
 			// Degrade gracefully: when the store is unreachable (e.g. OpenSearch
-			// down in local dev), return an empty history with 200 so the chat UI
-			// still mounts instead of erroring on load.
+			// down in local dev), fall through with an empty history so the chat UI
+			// still mounts instead of erroring on load (a live session can still be
+			// folded below).
 			logger.Warn().Err(err).Str("thread_id", threadID).Msg("messages list failed — returning empty history")
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]types.ThreadMessage{})
-			return
+		} else {
+			for _, hit := range resp.Hits.Hits {
+				messages = append(messages, messageFromHit(hit))
+			}
 		}
 
-		messages := make([]types.ThreadMessage, 0, len(resp.Hits.Hits))
-		for _, hit := range resp.Hits.Hits {
-			m := messageFromHit(hit)
-			messages = append(messages, m)
+		// Session-aware live fold: the ownership gate is coord.Status (a session
+		// unknown to this user never leaks). An ACTIVE session is always folded
+		// (the in-progress turn only exists in the event log); a TERMINAL one is
+		// folded only during the terminal-transition window — the run finished
+		// but its archive flush hasn't landed yet, so the DB is missing the just
+		// finished turn's assistant row. Folding there means a reload right at
+		// run end never shows a truncated thread.
+		if coord != nil {
+			if h, ok := coord.Status(userID, threadID); ok {
+				assistantID := fmt.Sprintf("%s:%d:assistant", threadID, h.Turn)
+				switch {
+				case isActiveRun(h.Status):
+					live, head, perr := projectLiveMessages(r.Context(), coord, threadID, userID)
+					if perr != nil {
+						logger.Warn().Err(perr).Str("thread_id", threadID).Msg("live session fold failed — returning archived history only")
+					} else {
+						messages = mergeLiveMessages(messages, live)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(map[string]any{
+							"data": messages,
+							"live": map[string]any{
+								"head_seq": head,
+								"turn":     h.Turn,
+								"status":   h.Status,
+							},
+						})
+						return
+					}
+				case !hasMessageID(messages, assistantID):
+					// Terminal but the turn's assistant row isn't searchable yet.
+					// Fold it from the log; the response stays the plain settled
+					// array (nothing live to attach to). Idempotent: once the
+					// archive lands, the deterministic id yields identical content.
+					if live, _, perr := projectLiveMessages(r.Context(), coord, threadID, userID); perr == nil {
+						messages = mergeLiveMessages(messages, live)
+					} else {
+						logger.Warn().Err(perr).Str("thread_id", threadID).Msg("terminal-window fold failed — returning archived history only")
+					}
+				}
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(messages)
 	}
+}
+
+// isActiveRun reports whether a run status means the session's current turn is
+// still producing events (so its log should be folded into the history reload).
+func isActiveRun(s agent.RunStatus) bool {
+	return s == agent.RunRunning || s == agent.RunAwaitingInput || s == agent.RunQueued
+}
+
+// hasMessageID reports whether the archived rows already contain a message with
+// the given deterministic id.
+func hasMessageID(messages []types.ThreadMessage, id string) bool {
+	for _, m := range messages {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// projectLiveMessages folds the session's full event log (hot Redis window,
+// falling back to the cold archive via the CompositeLog) into ThreadMessage rows
+// in the SAME spec the archiver persists: deterministic {session}:{turn}:{role}
+// ids, flattened content, full AI-SDK parts. It returns the head sequence of the
+// events folded, so the caller can tell the client where the live tail starts.
+func projectLiveMessages(ctx context.Context, coord *agent.Coordinator, threadID, userID string) ([]types.ThreadMessage, int64, error) {
+	ch, err := coord.Log().Read(ctx, threadID, 0, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	var events []eventlog.AgentEvent
+	var head int64
+	for se := range ch {
+		if se.Seq < 0 {
+			continue // heartbeat
+		}
+		if se.Seq > head {
+			head = se.Seq
+		}
+		events = append(events, se.Event)
+	}
+
+	projected := eventlog.ProjectMessages(events)
+	out := make([]types.ThreadMessage, 0, len(projected))
+	for _, m := range projected {
+		// Deterministic created_at from the turn's first event ts (mirrors the
+		// archiver) so the merged ordering matches what the archive will persist.
+		createdAt := time.Now().UTC().Format(time.RFC3339)
+		if m.TsMillis > 0 {
+			createdAt = time.UnixMilli(m.TsMillis).UTC().Format(time.RFC3339)
+		}
+		out = append(out, types.ThreadMessage{
+			ID:         fmt.Sprintf("%s:%d:%s", threadID, m.Turn, m.Role),
+			ThreadID:   threadID,
+			UserID:     userID,
+			Role:       m.Role,
+			Content:    m.Content,
+			Parts:      m.Parts,
+			Model:      m.Model,
+			AgentID:    m.AgentID,
+			DurationMs: m.DurationMs,
+			CreatedAt:  createdAt,
+		})
+	}
+	return out, head, nil
+}
+
+// mergeLiveMessages overlays the freshly-projected live messages onto the
+// archived rows: identical deterministic ids upsert IN PLACE (the projection is
+// at least as fresh as the archive), new ids (the in-progress turn) append. The
+// result is re-sorted by created_at (stable, so archived user rows keep their
+// position ahead of a same-second assistant turn).
+func mergeLiveMessages(archived, live []types.ThreadMessage) []types.ThreadMessage {
+	byID := make(map[string]int, len(archived))
+	for i, m := range archived {
+		byID[m.ID] = i
+	}
+	for _, m := range live {
+		if i, ok := byID[m.ID]; ok {
+			if archived[i].CreatedAt != "" {
+				m.CreatedAt = archived[i].CreatedAt // keep the archived ordering timestamp
+			}
+			if archived[i].Model != "" {
+				m.Model = archived[i].Model
+			}
+			archived[i] = m
+		} else {
+			archived = append(archived, m)
+		}
+	}
+	sort.SliceStable(archived, func(i, j int) bool {
+		return archived[i].CreatedAt < archived[j].CreatedAt
+	})
+	return archived
 }
 
 // ThreadsMessagesCreate adds a message to a thread.
@@ -459,6 +619,8 @@ func messageFromHit(hit opensearch.Hit) types.ThreadMessage {
 		Role:           getStr(raw, "role"),
 		Content:        getStr(raw, "content"),
 		Model:          getStr(raw, "model"),
+		AgentID:        getStr(raw, "agent_id"),
+		DurationMs:     getInt64(raw, "duration_ms"),
 		MessageGroupID: getStr(raw, "message_group_id"),
 		CreatedAt:      getStr(raw, "created_at"),
 	}
@@ -475,6 +637,23 @@ func getStr(m map[string]any, key string) string {
 		}
 	}
 	return ""
+}
+
+func getInt64(m map[string]any, key string) int64 {
+	if v, ok := m[key]; ok && v != nil {
+		switch n := v.(type) {
+		case float64:
+			return int64(n)
+		case int64:
+			return n
+		case int:
+			return int64(n)
+		case json.Number:
+			i, _ := n.Int64()
+			return i
+		}
+	}
+	return 0
 }
 
 func getBool(m map[string]any, key string) bool {

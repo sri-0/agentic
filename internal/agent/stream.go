@@ -30,6 +30,27 @@ const artifactToolName = "emit_artifact"
 // list (task_list snapshot) to the UI.
 const todoToolName = "todowrite"
 
+// officeArtifactStatePrefix is the StateDelta key prefix under which the mcp
+// office-tool decorator stashes a generated document's kind:file artifact,
+// keyed by tool-call id. It MUST match mcp.OfficeArtifactStatePrefix; kept as a
+// local literal because agent cannot import mcp (import cycle via handler).
+const officeArtifactStatePrefix = "office:artifact:"
+
+// officeArtifactFromState returns the file artifact the mcp office-tool decorator
+// stashed on this tool-call event's StateDelta (keyed by tool-call id), or nil
+// when absent. The decorator keeps the file URL out of the model-visible
+// FunctionResponse and puts a fully-formed kind:file artifact here instead, so
+// the card still surfaces without the URL ever reaching the model.
+func officeArtifactFromState(state map[string]any, callID string) map[string]any {
+	if state == nil {
+		return nil
+	}
+	if art, ok := state[officeArtifactStatePrefix+callID].(map[string]any); ok {
+		return art
+	}
+	return nil
+}
+
 // usageTotals holds token counts captured from the ADK run.
 type usageTotals struct {
 	prompt     int
@@ -51,25 +72,26 @@ func setStreamHeaders(w http.ResponseWriter, format stream.Format) {
 
 // newEncoder builds the wire-format encoder for the request. The OpenAI encoder
 // keeps the agent id in the chunk `model` field (legacy behavior); the AI-SDK
-// encoder stamps model + agent id onto message-metadata.
-func newEncoder(format stream.Format, sink stream.Sink, requestID string, core *Core, threadID string) stream.Encoder {
+// encoder stamps model + agent id onto message-metadata and, when turn >= 0,
+// the deterministic {threadID}:{turn}:assistant messageId onto the start frame.
+func newEncoder(format stream.Format, sink stream.Sink, requestID string, core *Core, threadID string, turn int) stream.Encoder {
 	if format == stream.FormatAISDK {
-		return aisdk.New(sink, core.ModelID, core.AgentID)
+		return aisdk.New(sink, core.ModelID, core.AgentID, threadID, turn)
 	}
 	return openai.New(sink, requestID, core.AgentID, threadID)
 }
 
 // StreamAgentRun runs the agent loop with the default (OpenAI) wire format.
-func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
-	StreamAgentRunFormat(ctx, w, stream.FormatOpenAI, core, threadID, messages, saver, logger)
+func StreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, threadID, userID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+	StreamAgentRunFormat(ctx, w, stream.FormatOpenAI, core, threadID, userID, messages, saver, logger)
 }
 
 // StreamAgentRunFormat runs the agent loop, emitting the chosen wire format.
-func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format stream.Format, core *Core, threadID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
+func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format stream.Format, core *Core, threadID, userID string, messages []types.ChatMessage, saver *chat.MessageSaver, logger zerolog.Logger) {
 	setStreamHeaders(w, format)
 
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
-	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID)
+	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID, -1)
 
 	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Str("format", string(format)).Int("messages", len(messages)).Msg("stream: request received")
 
@@ -90,9 +112,9 @@ func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format str
 	lastMsg := messages[len(messages)-1]
 	userContent := genai.NewContentFromText(lastMsg.Content, genai.RoleUser)
 
-	// Persist user message
+	// Persist user message (no coordinator turn on this legacy path → random id)
 	if saver != nil {
-		saver.SaveUserMessage(ctx, threadID, lastMsg.Content)
+		saver.SaveUserMessage(ctx, threadID, userID, lastMsg.Content, -1)
 	}
 
 	streamEvents(ctx, enc, core, threadID, requestID, userContent, saver, logger)
@@ -109,7 +131,7 @@ func StreamResumeRunFormat(ctx context.Context, w http.ResponseWriter, format st
 	setStreamHeaders(w, format)
 
 	requestID := fmt.Sprintf("chatcmpl-resume-%s", uuid.New().String()[:12])
-	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID)
+	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID, -1)
 
 	action := "denied"
 	if approved {
@@ -153,7 +175,13 @@ func StreamResumeRunFormat(ctx context.Context, w http.ResponseWriter, format st
 // format-agnostic (the encoder owns the byte format). RunStarted / initial
 // metadata are emitted by the callers, so the AI-SDK stream opens with the
 // required `start` chunk even on the resume path.
-func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID, runID string, content *genai.Content, saver *chat.MessageSaver, logger zerolog.Logger) {
+// streamEvents processes the run loop and returns the terminal outcome. A nil
+// error means the run completed normally (done); a non-nil error is a runner
+// failure that callers map to run-status{error} (H5) rather than silently
+// reporting success. HITL interrupts are signalled via the encoder's
+// Interrupted() (awaiting-input), independent of this error.
+func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID, runID string, content *genai.Content, saver *chat.MessageSaver, logger zerolog.Logger) error {
+	var runErr error
 	toolCallIdx := int64(0)
 	hadPartialText := false
 	var outputText string // accumulates output agent text for persistence
@@ -252,6 +280,7 @@ func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID,
 			} else {
 				enc.Progress("error", fmt.Sprintf("Error: %v", err))
 			}
+			runErr = err
 			break
 		}
 
@@ -381,7 +410,7 @@ func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID,
 					Details:    originalCall.Args,
 					ThreadID:   threadID,
 				})
-				return
+				return nil
 			}
 
 			// Regular tool call (non-confirmation) — emit delta for UI
@@ -411,6 +440,15 @@ func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID,
 				// emit_artifact tool → push an artifact to the UI.
 				if fr.Name == artifactToolName {
 					enc.Artifact(fr.Response)
+				}
+				// Office document tools return a bare file URL, which the mcp
+				// decorator strips from the model-visible result and stashes on
+				// this event's StateDelta side-channel (keyed by tool-call id).
+				// Emit it as a file artifact so it lands in the side panel — the
+				// URL never reaches the model.
+				if art := officeArtifactFromState(event.Actions.StateDelta, fr.ID); art != nil {
+					streamLog.Info().Str("tool", fr.Name).Interface("artifact", art).Msg("stream: office file artifact")
+					enc.Artifact(art)
 				}
 				// todowrite tool → push a task_list snapshot.
 				if fr.Name == todoToolName {
@@ -464,6 +502,7 @@ func streamEvents(ctx context.Context, enc stream.Encoder, core *Core, threadID,
 	// Final metadata carries the elapsed time, then close the run.
 	enc.Metadata(core.ModelID, core.AgentID, time.Since(startTime).Milliseconds())
 	enc.RunFinished(u)
+	return runErr
 }
 
 // usageBreakdown attributes prompt tokens to History and completion tokens to

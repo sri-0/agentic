@@ -253,7 +253,7 @@ func TestStreamAgentRun_SimpleTextResponse(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Hi"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-1", messages, nil, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-1", "", messages, nil, zerolog.Nop())
 
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
@@ -313,7 +313,7 @@ func TestStreamAgentRun_ToolCallAndResult(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Show me all products"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-2", messages, nil, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-2", "", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -455,7 +455,7 @@ func TestStreamAgentRun_TodoWriteTaskList(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Plan the work"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-todo", messages, nil, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-todo", "", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -500,7 +500,7 @@ func TestStreamAgentRun_HITLInterrupt(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Insert a new user"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-hitl", messages, nil, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-hitl", "", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -562,7 +562,7 @@ func TestStreamAgentRun_StreamingTimestamps(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	start := time.Now()
-	StreamAgentRun(context.Background(), w, core, "thread-ts",
+	StreamAgentRun(context.Background(), w, core, "thread-ts", "",
 		[]types.ChatMessage{{Role: "user", Content: "test"}}, nil, zerolog.Nop())
 	elapsed := time.Since(start)
 
@@ -842,7 +842,7 @@ func TestStreamAgentRun_SubAgentToolAttribution(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "go"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-subtool", messages, nil, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-subtool", "", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -896,7 +896,7 @@ func TestStreamAgentRun_AgentEventRouting(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "research something"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-routing", messages, nil, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-routing", "", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 
@@ -978,7 +978,7 @@ func TestStreamAgentRun_FlatAgentNoRouting(t *testing.T) {
 	w := httptest.NewRecorder()
 	messages := []types.ChatMessage{{Role: "user", Content: "Hi"}}
 
-	StreamAgentRun(context.Background(), w, core, "thread-flat", messages, nil, zerolog.Nop())
+	StreamAgentRun(context.Background(), w, core, "thread-flat", "", messages, nil, zerolog.Nop())
 
 	events := parseSSEEvents(w.Body.String())
 

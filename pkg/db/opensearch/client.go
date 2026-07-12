@@ -75,6 +75,19 @@ func (c *Client) CreateIndex(ctx context.Context, index string, mapping json.Raw
 
 // IndexDocument indexes a document. If docID is empty, OpenSearch generates one.
 func (c *Client) IndexDocument(ctx context.Context, index, docID string, body any) (string, error) {
+	return c.indexDocument(ctx, index, docID, body, false)
+}
+
+// IndexDocumentRefresh indexes a document and, when waitForRefresh is true, blocks
+// until the change is visible to search (refresh=wait_for). Used by the terminal
+// archive flush (Task C) so a reload immediately after a run is `done` can search
+// the freshly-written full-parts message doc rather than waiting for the index's
+// periodic refresh (~1s). Prefer the plain IndexDocument for the hot path.
+func (c *Client) IndexDocumentRefresh(ctx context.Context, index, docID string, body any, waitForRefresh bool) (string, error) {
+	return c.indexDocument(ctx, index, docID, body, waitForRefresh)
+}
+
+func (c *Client) indexDocument(ctx context.Context, index, docID string, body any, waitForRefresh bool) (string, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("marshal document: %w", err)
@@ -87,6 +100,9 @@ func (c *Client) IndexDocument(ctx context.Context, index, docID string, body an
 	} else {
 		method = "POST"
 		path = fmt.Sprintf("/%s/_doc", index)
+	}
+	if waitForRefresh {
+		path += "?refresh=wait_for"
 	}
 
 	respBody, err := c.do(ctx, method, path, data)
@@ -101,6 +117,37 @@ func (c *Client) IndexDocument(ctx context.Context, index, docID string, body an
 		return "", fmt.Errorf("parse index response: %w", err)
 	}
 	return result.ID, nil
+}
+
+// CreateDocumentIfAbsent indexes a document only if one with docID does not
+// already exist (OpenSearch op_type=create). If the document already exists,
+// OpenSearch returns 409 Conflict which is treated as a harmless no-op
+// (created reports false, err is nil). This is idempotent: the first caller
+// wins and later callers never clobber the existing document. docID is required.
+func (c *Client) CreateDocumentIfAbsent(ctx context.Context, index, docID string, body any) (created bool, err error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return false, fmt.Errorf("marshal document: %w", err)
+	}
+
+	path := fmt.Sprintf("/%s/_doc/%s?op_type=create", index, docID)
+	resp, err := c.doRaw(ctx, "PUT", path, data)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusConflict {
+		// Document already exists — harmless no-op.
+		io.Copy(io.Discard, resp.Body)
+		return false, nil
+	}
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("opensearch create %s/%s: status %d: %s", index, docID, resp.StatusCode, string(respBody))
+	}
+	io.Copy(io.Discard, resp.Body)
+	return true, nil
 }
 
 // GetDocument retrieves a document by ID.

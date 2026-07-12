@@ -109,6 +109,10 @@ type Encoder interface {
 	RunStarted()
 	// RunFinished emits the terminal usage, finish, and [DONE] framing.
 	RunFinished(u Usage)
+	// RunFailed emits a terminal ERROR for the run (not a normal finish), so a
+	// failed run renders as an error in the UI rather than as assistant text
+	// labelled "Completed". It closes any open part and emits the [DONE] framing.
+	RunFailed(msg string)
 
 	// Run-level (un-attributed) progress, e.g. planning / fatal error.
 	Progress(phase, message string)

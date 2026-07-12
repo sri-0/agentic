@@ -83,10 +83,16 @@ type ChatCompletionResponse struct {
 	Usage   json.RawMessage `json:"usage,omitempty" jsonschema_description:"Token usage statistics"`
 }
 
-// ResumeRequest is the payload for POST /v1/agent/resume.
+// ResumeRequest is the payload for POST /v1/agent/resume. For a plain HITL
+// approve/deny (e.g. write_database) only Action is set. For a question-tool
+// reply, Answers carries one list of selected label strings per question (and
+// Text an optional free-text answer); these ride the ADK confirmation payload so
+// the answers reach the model as the tool result.
 type ResumeRequest struct {
-	ThreadID string `json:"thread_id" jsonschema:"required" jsonschema_description:"Thread ID of the paused agent"`
-	Action   string `json:"action" jsonschema:"required" jsonschema_description:"One of: approved, denied, skipped"`
+	ThreadID string     `json:"thread_id" jsonschema:"required" jsonschema_description:"Thread ID of the paused agent"`
+	Action   string     `json:"action" jsonschema:"required" jsonschema_description:"One of: approved, denied, skipped"`
+	Answers  [][]string `json:"answers,omitempty" jsonschema_description:"Question answers: one list of selected label strings per question"`
+	Text     string     `json:"text,omitempty" jsonschema_description:"Optional free-text answer accompanying the question reply"`
 }
 
 // ChatCompletionChunk extends the OpenAI streaming chunk with thread tracking.

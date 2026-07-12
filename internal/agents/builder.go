@@ -56,6 +56,18 @@ func BuildAll(cfg *config.Config, promptStore *prompts.Store, sessionSvc session
 			name:        "suggestion",
 			instruction: promptStore.MustRender("prompt_suggestion", nil),
 		},
+		{
+			name:        "title",
+			instruction: "You generate a concise 3-6 word title summarising a conversation from the user's message. Output ONLY the title text — no quotes, no trailing punctuation, no preamble.",
+		},
+		{
+			name:        "router",
+			instruction: "You are an agent router. You receive a list of available agents (each with an id and description) followed by a user message. Choose the single best agent to handle the message and output ONLY its id — no explanation, no punctuation, just the id exactly as listed.",
+		},
+		{
+			name:        "memory_extractor",
+			instruction: "You extract durable, user-specific facts worth remembering across future conversations (preferences, identity, long-lived context). Output a short bullet list of atomic facts, or exactly 'NONE' if nothing is worth saving. Do not include ephemeral or task-specific details.",
+		},
 	}
 
 	for _, b := range builders {

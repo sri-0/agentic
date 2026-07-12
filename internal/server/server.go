@@ -8,6 +8,7 @@ import (
 	internalagents "agentic/internal/agents"
 	"agentic/internal/config"
 	"agentic/internal/handler"
+	"agentic/internal/mcp"
 	"agentic/pkg/db/opensearch"
 	"agentic/pkg/memory"
 	oa "agentic/pkg/openapi"
@@ -19,11 +20,18 @@ import (
 )
 
 // NewRouter creates the HTTP router with all routes and middleware.
-func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, logger zerolog.Logger) *mux.Router {
+func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearch.Client, memorySvc *memory.Service, internalAgents *internalagents.Registry, sessionSvc session.Service, agentConfigs map[string]*config.AgentConfig, buildOverrideCore agent.OverrideCoreFunc, coord *agent.Coordinator, mcpManager *mcp.Manager, logger zerolog.Logger) *mux.Router {
 	r := mux.NewRouter()
 
 	r.Use(corsMiddleware)
 	r.Use(loggingMiddleware(logger))
+
+	// Global CORS preflight handler: match OPTIONS on ANY path so the (route-
+	// scoped) corsMiddleware runs and returns the preflight headers. Without
+	// this, a preflight to a GET-only route (e.g. /v1/models — the frontend's
+	// X-User-ID header makes even GETs non-simple) matches no route and 405s,
+	// which the browser reports as a CORS error.
+	r.PathPrefix("/").Methods(http.MethodOptions).HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 
 	r.HandleFunc("/health", handler.Health(registry)).Methods("GET")
 	specCfg := oa.SpecConfig{
@@ -35,14 +43,34 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 	r.HandleFunc("/docs", handler.APIDocs(cfg.AppName)).Methods("GET")
 	r.HandleFunc("/v1/models", handler.Models(cfg)).Methods("GET")
 	r.HandleFunc("/v1/agents", handler.Agents(cfg)).Methods("GET")
-	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, agentConfigs, buildOverrideCore, logger)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/chat/completions", handler.Chat(registry, cfg, osClient, agentConfigs, buildOverrideCore, coord, internalAgents, sessionSvc, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/embeddings", handler.Embeddings(cfg, logger)).Methods("POST", "OPTIONS")
 	r.HandleFunc("/v1/messages", handler.Messages(cfg, logger)).Methods("POST", "OPTIONS")
-	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, logger)).Methods("POST", "OPTIONS")
+	r.HandleFunc("/v1/agent/resume", handler.Resume(registry, coord, logger)).Methods("POST", "OPTIONS")
+
+	// Server-side sessions: list still-running sessions, check status, attach/
+	// resume a session's event stream (?after=<seq> for exactly-once resume), and
+	// cancel a running session.
+	if coord != nil {
+		r.HandleFunc("/v1/sessions", handler.SessionsList(coord)).Methods("GET")
+		r.HandleFunc("/v1/sessions/{id}", handler.SessionStatus(coord)).Methods("GET")
+		r.HandleFunc("/v1/sessions/{id}/stream", handler.SessionStream(coord, logger)).Methods("GET")
+		r.HandleFunc("/v1/sessions/{id}/cancel", handler.SessionCancel(coord, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/sessions/{id}/viewed", handler.SessionMarkViewed(coord, logger)).Methods("POST", "OPTIONS")
+	}
+
+	// MCP: list configured servers with per-user status, and drive the
+	// backend-held OAuth connect/callback flow (PKCE + dynamic registration).
+	if mcpManager != nil {
+		r.HandleFunc("/v1/mcp", mcpManager.List(logger)).Methods("GET")
+		r.HandleFunc("/v1/mcp/oauth/callback", mcpManager.Callback(logger)).Methods("GET")
+		r.HandleFunc("/v1/mcp/{server}/connect", mcpManager.Connect(logger)).Methods("POST", "OPTIONS")
+	}
 
 	// Internal agent endpoints
 	if internalAgents != nil {
 		r.HandleFunc("/v1/suggestions", handler.Suggestions(internalAgents, sessionSvc, logger)).Methods("POST", "OPTIONS")
+		r.HandleFunc("/v1/route", handler.Route(internalAgents, cfg, sessionSvc, logger)).Methods("POST", "OPTIONS")
 	}
 
 	// RAG search endpoint (standalone vector/text search)
@@ -78,7 +106,7 @@ func NewRouter(registry *agent.Registry, cfg *config.Config, osClient *opensearc
 		r.HandleFunc("/v1/memories/{id}", handler.MemoriesDelete(memorySvc, logger)).Methods("DELETE")
 
 		// Thread messages
-		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesList(osClient, logger)).Methods("GET")
+		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesList(osClient, coord, logger)).Methods("GET")
 		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesCreate(osClient, logger)).Methods("POST", "OPTIONS")
 		r.HandleFunc("/v1/threads/{id}/messages/bulk", handler.ThreadsMessagesBulkCreate(osClient, logger)).Methods("POST", "OPTIONS")
 		r.HandleFunc("/v1/threads/{id}/messages", handler.ThreadsMessagesDelete(osClient, logger)).Methods("DELETE")
