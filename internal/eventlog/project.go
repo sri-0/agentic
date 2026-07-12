@@ -14,6 +14,13 @@ type ProjectedMessage struct {
 	Content string `json:"content"`
 	Parts   []Part `json:"parts"`
 
+	// Metadata folded from the EvMetadata event the encoder appends on run finish
+	// (mirrors the live `message-metadata` frame). These persist on the archive
+	// message doc and rehydrate the footer (model · agent · duration) on reload.
+	Model      string `json:"model,omitempty"`
+	AgentID    string `json:"agentId,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+
 	// Turn is the 0-based index of this assistant message within the session's
 	// event log (Nth flushed assistant turn). It is STABLE across re-projections
 	// of a growing log, so the archive can derive a deterministic OpenSearch _id
@@ -37,6 +44,12 @@ type Part struct {
 
 	// text / reasoning parts.
 	Text string `json:"text,omitempty"`
+
+	// reasoning part timing (opencode model): unix-ms of the first and last
+	// reasoning delta. StartedMs/EndedMs round-trip through the archive so the
+	// reload can show the REAL "Thought for N seconds" instead of a static label.
+	StartedMs int64 `json:"startedMs,omitempty"`
+	EndedMs   int64 `json:"endedMs,omitempty"`
 
 	// dynamic-tool part.
 	ToolName   string `json:"toolName,omitempty"`
@@ -117,6 +130,9 @@ type projector struct {
 	parts        []Part
 	content      string
 	openTs       int64          // ts (unix ms) of the first event that opened this message
+	model        string         // EvMetadata: model id for this assistant turn
+	agentID      string         // EvMetadata: agent id for this assistant turn
+	durationMs   int64          // EvMetadata: wall-clock elapsed for this turn
 	turn         int            // 0-based index of the NEXT flushed assistant message
 	textIdx      int            // index into parts of the open text part, -1 if none
 	rsnIdx       int            // index into parts of the open reasoning part, -1 if none
@@ -133,6 +149,9 @@ func (p *projector) ensureOpen(ts int64) {
 	p.parts = nil
 	p.content = ""
 	p.openTs = ts
+	p.model = ""
+	p.agentID = ""
+	p.durationMs = 0
 	p.textIdx = -1
 	p.rsnIdx = -1
 	p.toolIdx = map[string]int{}
@@ -164,9 +183,17 @@ func (p *projector) fold(ev AgentEvent) {
 		p.textIdx = -1
 		if p.rsnIdx < 0 {
 			p.rsnIdx = len(p.parts)
-			p.parts = append(p.parts, Part{Type: PartReasoning})
+			p.parts = append(p.parts, Part{Type: PartReasoning, StartedMs: ev.Ts})
 		}
 		p.parts[p.rsnIdx].Text += ev.Text
+		// Capture the FIRST delta's ts as start (only if unset) and the LAST as end,
+		// so the persisted reasoning part carries the real thinking window.
+		if p.parts[p.rsnIdx].StartedMs == 0 {
+			p.parts[p.rsnIdx].StartedMs = ev.Ts
+		}
+		if ev.Ts > 0 {
+			p.parts[p.rsnIdx].EndedMs = ev.Ts
+		}
 
 	case EvToolCall:
 		p.ensureOpen(ev.Ts)
@@ -302,6 +329,21 @@ func (p *projector) fold(ev AgentEvent) {
 			})
 		}
 
+	case EvMetadata:
+		// The encoder appends this on run finish (model / agent id / elapsed),
+		// mirroring the live `message-metadata` frame. Stamp it onto the currently
+		// open assistant message so flush persists it (footer rehydration on reload).
+		p.ensureOpen(ev.Ts)
+		if ev.Model != "" {
+			p.model = ev.Model
+		}
+		if ev.Author != "" {
+			p.agentID = ev.Author
+		}
+		if ev.Duration != 0 {
+			p.durationMs = ev.Duration
+		}
+
 	case EvRunStatus:
 		// A hard terminal flushes the assistant message; awaiting-input keeps it
 		// open (the run continues after the HITL/question resume).
@@ -317,11 +359,14 @@ func (p *projector) flush() {
 	}
 	if len(p.parts) > 0 {
 		p.messages = append(p.messages, ProjectedMessage{
-			Role:     "assistant",
-			Content:  p.content,
-			Parts:    p.parts,
-			Turn:     p.turn,
-			TsMillis: p.openTs,
+			Role:       "assistant",
+			Content:    p.content,
+			Parts:      p.parts,
+			Turn:       p.turn,
+			TsMillis:   p.openTs,
+			Model:      p.model,
+			AgentID:    p.agentID,
+			DurationMs: p.durationMs,
 		})
 		// Advance the turn index only for a materialised assistant message, so the
 		// Nth assistant turn always maps to the same Turn across re-projections.
@@ -331,6 +376,9 @@ func (p *projector) flush() {
 	p.parts = nil
 	p.content = ""
 	p.openTs = 0
+	p.model = ""
+	p.agentID = ""
+	p.durationMs = 0
 }
 
 // ── field extraction helpers ─────────────────────────────────────────────────

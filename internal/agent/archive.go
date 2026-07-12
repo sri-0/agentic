@@ -123,6 +123,17 @@ func (a *Archiver) flush(ctx context.Context, app, userID, sessionID string, wai
 			"parts":      json.RawMessage(parts), // full AI-SDK parts for rehydration
 			"created_at": createdAt,
 		}
+		// Message metadata (model · agent · duration) so the footer rehydrates on
+		// reload identically to the live `message-metadata` frame.
+		if m.Model != "" {
+			doc["model"] = m.Model
+		}
+		if m.AgentID != "" {
+			doc["agent_id"] = m.AgentID
+		}
+		if m.DurationMs != 0 {
+			doc["duration_ms"] = m.DurationMs
+		}
 		// Deterministic _id keyed by (session, turn, role): re-flushes of a growing
 		// log UPSERT each assistant message in place (PUT _doc/{id}) instead of
 		// appending a duplicate on every run terminal.
