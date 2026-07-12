@@ -248,6 +248,17 @@ func (e *Encoder) Artifact(value map[string]any) {
 	if lang := str(value, "language"); lang != "" {
 		data["language"] = lang
 	}
+	// File artifacts (e.g. office documents) carry a URL/filename/mime instead
+	// of inline content.
+	if url := str(value, "url"); url != "" {
+		data["url"] = url
+	}
+	if fn := str(value, "filename"); fn != "" {
+		data["filename"] = fn
+	}
+	if mime := str(value, "mime"); mime != "" {
+		data["mime"] = mime
+	}
 	e.send(map[string]any{"type": "data-artifact", "id": id, "data": data})
 }
 
