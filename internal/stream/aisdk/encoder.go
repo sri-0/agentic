@@ -23,15 +23,30 @@ type Encoder struct {
 	model   string
 	agentID string
 
+	// messageID is the server-authoritative AI-SDK message id stamped on the
+	// start frame. It uses the SAME deterministic scheme the archiver keys its
+	// message docs on ({sessionID}:{turn}:assistant, see agent.Archiver), so the
+	// live stream, a reconnect replay, and the reloaded DB history all agree on
+	// one id per assistant turn. Empty when the caller has no turn context
+	// (plain-model proxy, legacy non-coordinated runs): the start frame then
+	// carries no id and the client generates one, as before.
+	messageID string
+
 	seq         int
 	textID      string
 	reasoningID string
 }
 
 // New builds an Encoder writing to sink. model and agentID are stamped onto the
-// message-metadata chunks.
-func New(sink stream.Sink, model, agentID string) *Encoder {
-	return &Encoder{sink: sink, model: model, agentID: agentID}
+// message-metadata chunks. sessionID and turn (the 0-based assistant turn this
+// run writes, per eventlog.NextTurn) derive the deterministic start-frame
+// messageId; pass "" / a negative turn when unknown to omit it.
+func New(sink stream.Sink, model, agentID, sessionID string, turn int) *Encoder {
+	e := &Encoder{sink: sink, model: model, agentID: agentID}
+	if sessionID != "" && turn >= 0 {
+		e.messageID = fmt.Sprintf("%s:%d:assistant", sessionID, turn)
+	}
+	return e
 }
 
 func (e *Encoder) nextID(prefix string) string {
@@ -76,8 +91,15 @@ func (e *Encoder) closeReasoning() {
 
 // ── lifecycle ────────────────────────────────────────────────────────────────
 
-// RunStarted emits the leading start frame.
+// RunStarted emits the leading start frame. When the encoder was built with a
+// session/turn it carries the deterministic messageId, which the AI-SDK client
+// adopts as the assistant message id — making live, replayed, and reloaded
+// renderings of the same turn converge on one identity.
 func (e *Encoder) RunStarted() {
+	if e.messageID != "" {
+		e.send(map[string]any{"type": "start", "messageId": e.messageID})
+		return
+	}
 	e.send(map[string]any{"type": "start"})
 }
 

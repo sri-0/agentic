@@ -34,9 +34,9 @@ func NonStreamAgentRun(ctx context.Context, w http.ResponseWriter, core *Core, t
 	lastMsg := messages[len(messages)-1]
 	userContent := genai.NewContentFromText(lastMsg.Content, genai.RoleUser)
 
-	// Persist user message
+	// Persist user message (no coordinator turn on this legacy path → random id)
 	if saver != nil {
-		saver.SaveUserMessage(ctx, threadID, userID, lastMsg.Content)
+		saver.SaveUserMessage(ctx, threadID, userID, lastMsg.Content, -1)
 	}
 
 	var textContent string

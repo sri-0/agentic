@@ -46,6 +46,12 @@ type RunHandle struct {
 	RunID     string    `json:"run_id"`
 	Status    RunStatus `json:"status"`
 	StartSeq  int64     `json:"start_seq"` // first seq THIS run will write (Head()+1 at Start)
+	// Turn is the 0-based assistant turn this run writes, derived from the SAME
+	// projection the archiver uses (eventlog.NextTurn), so the live start-frame
+	// messageId ({session}:{turn}:assistant) matches the archived doc id. For a
+	// QUEUED handle it is approximate (corrected when the turn actually runs),
+	// mirroring StartSeq.
+	Turn      int       `json:"turn"`
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
@@ -109,6 +115,7 @@ type Coordinator struct {
 	stopSweep chan struct{}
 
 	hooks       []PostRunHook           // fired async on every run terminal
+	startHooks  []PostRunHook           // fired async when a fresh turn starts (status running)
 	taskBoards  eventlog.TaskBoardStore // per-session current-board cache (Task 4)
 	viewed      ViewedStore             // per-session per-user viewed flag (Task B)
 	termFlusher TerminalFlusher         // synchronous terminal archive flush (Task C)
@@ -201,6 +208,18 @@ func (c *Coordinator) AddPostRunHook(h PostRunHook) {
 	c.hooks = append(c.hooks, h)
 }
 
+// AddRunStartHook registers a hook fired async when a FRESH turn starts
+// (Status is RunRunning, Messages carry the turn's input). Used for
+// side-effects that should not wait for the terminal — e.g. generating the
+// thread title from the first user message while the run is still streaming.
+// Not safe to call concurrently with active runs; call during bootstrap wiring.
+func (c *Coordinator) AddRunStartHook(h PostRunHook) {
+	if h == nil {
+		return
+	}
+	c.startHooks = append(c.startHooks, h)
+}
+
 // firePostRun invokes every registered hook in its own goroutine (non-blocking).
 // Only fired on a hard terminal (done/error/cancelled), never on awaiting-input
 // (the run is suspended, not finished).
@@ -208,12 +227,17 @@ func (c *Coordinator) firePostRun(info PostRunInfo) {
 	if info.Status == RunAwaitingInput {
 		return
 	}
-	for _, h := range c.hooks {
+	c.fireHooks(c.hooks, info)
+}
+
+// fireHooks invokes each hook in its own panic-guarded goroutine (non-blocking).
+func (c *Coordinator) fireHooks(hooks []PostRunHook, info PostRunInfo) {
+	for _, h := range hooks {
 		h := h
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					c.logger.Error().Interface("panic", r).Str("session", info.SessionID).Msg("post-run hook panicked")
+					c.logger.Error().Interface("panic", r).Str("session", info.SessionID).Msg("run hook panicked")
 				}
 			}()
 			h(info)
@@ -266,6 +290,11 @@ type RunRequest struct {
 	// turnKey is a test-only label used by the run seam to distinguish turns; it
 	// has no effect in production (defaultRunFunc ignores it).
 	turnKey string
+
+	// turn is stamped by startLocked (from eventlog.NextTurn) before the run
+	// goroutine launches, so defaultRunFunc can persist the turn's user message
+	// under the deterministic {session}:{turn}:user doc id.
+	turn int
 }
 
 // Start launches a background run for the session. If a run is already active
@@ -294,7 +323,8 @@ func (c *Coordinator) Start(req RunRequest) (*RunHandle, error) {
 			AgentID:   agentIDOf(req),
 			RunID:     newRunID(),
 			Status:    RunQueued,
-			StartSeq:  startSeq, // approximate; corrected when the turn actually runs
+			StartSeq:  startSeq,                               // approximate; corrected when the turn actually runs
+			Turn:      h.Turn + len(c.pending[req.SessionID]), // approximate; corrected when the turn actually runs
 			StartedAt: c.now(),
 			UpdatedAt: c.now(),
 		}
@@ -313,6 +343,8 @@ func (c *Coordinator) startLocked(req RunRequest) *RunHandle {
 	runCtx, cancel := context.WithCancel(context.Background())
 	runID := newRunID()
 	startSeq := c.headLocked(req.SessionID) + 1
+	turn := c.nextTurnLocked(req.SessionID)
+	req.turn = turn
 	h := &RunHandle{
 		SessionID: req.SessionID,
 		UserID:    req.UserID,
@@ -320,6 +352,7 @@ func (c *Coordinator) startLocked(req RunRequest) *RunHandle {
 		RunID:     runID,
 		Status:    RunRunning,
 		StartSeq:  startSeq,
+		Turn:      turn,
 		StartedAt: c.now(),
 		UpdatedAt: c.now(),
 		cancel:    cancel,
@@ -337,6 +370,18 @@ func (c *Coordinator) startLocked(req RunRequest) *RunHandle {
 	_, _ = c.log.Append(runCtx, req.SessionID, eventlog.AgentEvent{V: 1, Type: eventlog.EvRunStatus, Status: eventlog.StatusRunning, RunID: runID})
 
 	go c.run(runCtx, req, h, runID)
+
+	// Fire run-START hooks (e.g. early thread titling) async, with the turn's
+	// input messages — they must never block or observe the run's outcome.
+	c.fireHooks(c.startHooks, PostRunInfo{
+		SessionID: req.SessionID,
+		UserID:    req.UserID,
+		AgentID:   agentIDOf(req),
+		RunID:     runID,
+		Status:    RunRunning,
+		Core:      req.Core,
+		Messages:  req.Messages,
+	})
 	return h
 }
 
@@ -344,6 +389,27 @@ func (c *Coordinator) startLocked(req RunRequest) *RunHandle {
 func (c *Coordinator) headLocked(sessionID string) int64 {
 	n, _ := c.log.Head(context.Background(), sessionID)
 	return n
+}
+
+// nextTurnLocked derives the 0-based turn index the next run's assistant
+// message will receive by folding the session's full log through the SAME
+// projection the archiver uses for its deterministic {session}:{turn}:{role}
+// doc ids (eventlog.NextTurn). The live start-frame messageId and the archived
+// DB id therefore stay aligned by construction. Caller holds mu; read errors
+// map to turn 0 (fresh session).
+func (c *Coordinator) nextTurnLocked(sessionID string) int {
+	ch, err := c.log.Read(context.Background(), sessionID, 0, false)
+	if err != nil {
+		return 0
+	}
+	var events []eventlog.AgentEvent
+	for se := range ch {
+		if se.Seq < 0 {
+			continue // heartbeat
+		}
+		events = append(events, se.Event)
+	}
+	return eventlog.NextTurn(events)
 }
 
 func (c *Coordinator) run(ctx context.Context, req RunRequest, h *RunHandle, runID string) {
@@ -381,11 +447,13 @@ func (c *Coordinator) defaultRunFunc(ctx context.Context, req RunRequest, enc *e
 		// Persist the RAW user text (what the user typed), not the augmented
 		// content sent to the model (e.g. memory-recall preamble). The model still
 		// receives last.Content above; only the reload history is the raw text.
+		// req.turn keys the doc deterministically ({session}:{turn}:user) so the
+		// persisted user message pairs with the turn's assistant message id.
 		saveText := last.Content
 		if req.RawUserText != "" {
 			saveText = req.RawUserText
 		}
-		req.Saver.SaveUserMessage(ctx, req.SessionID, req.UserID, saveText)
+		req.Saver.SaveUserMessage(ctx, req.SessionID, req.UserID, saveText, req.turn)
 	}
 
 	runID := fmt.Sprintf("run-%s", uuid.New().String()[:12])
@@ -531,7 +599,11 @@ func (c *Coordinator) Resume(core *Core, sessionID, userID string, pending *hitl
 	runCtx, cancel := context.WithCancel(context.Background())
 	runID := newRunID()
 	startSeq := c.headLocked(sessionID) + 1
-	h := &RunHandle{SessionID: sessionID, UserID: userID, AgentID: core.AgentID, RunID: runID, Status: RunRunning, StartSeq: startSeq, StartedAt: c.now(), UpdatedAt: c.now(), cancel: cancel, core: core}
+	// NextTurn over a log suspended on awaiting-input reports the still-OPEN
+	// assistant message's turn, so the continuation streams under the SAME
+	// message id the interrupted run started with.
+	turn := c.nextTurnLocked(sessionID)
+	h := &RunHandle{SessionID: sessionID, UserID: userID, AgentID: core.AgentID, RunID: runID, Status: RunRunning, StartSeq: startSeq, Turn: turn, StartedAt: c.now(), UpdatedAt: c.now(), cancel: cancel, core: core}
 	h.termOnce = &sync.Once{} // required: finish()/Cancel route through terminate() which calls termOnce.Do
 	c.active[sessionID] = h
 	c.known[sessionID] = h

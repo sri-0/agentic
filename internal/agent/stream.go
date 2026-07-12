@@ -72,10 +72,11 @@ func setStreamHeaders(w http.ResponseWriter, format stream.Format) {
 
 // newEncoder builds the wire-format encoder for the request. The OpenAI encoder
 // keeps the agent id in the chunk `model` field (legacy behavior); the AI-SDK
-// encoder stamps model + agent id onto message-metadata.
-func newEncoder(format stream.Format, sink stream.Sink, requestID string, core *Core, threadID string) stream.Encoder {
+// encoder stamps model + agent id onto message-metadata and, when turn >= 0,
+// the deterministic {threadID}:{turn}:assistant messageId onto the start frame.
+func newEncoder(format stream.Format, sink stream.Sink, requestID string, core *Core, threadID string, turn int) stream.Encoder {
 	if format == stream.FormatAISDK {
-		return aisdk.New(sink, core.ModelID, core.AgentID)
+		return aisdk.New(sink, core.ModelID, core.AgentID, threadID, turn)
 	}
 	return openai.New(sink, requestID, core.AgentID, threadID)
 }
@@ -90,7 +91,7 @@ func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format str
 	setStreamHeaders(w, format)
 
 	requestID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
-	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID)
+	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID, -1)
 
 	logger.Info().Str("thread_id", threadID).Str("agent_id", core.AgentID).Str("format", string(format)).Int("messages", len(messages)).Msg("stream: request received")
 
@@ -111,9 +112,9 @@ func StreamAgentRunFormat(ctx context.Context, w http.ResponseWriter, format str
 	lastMsg := messages[len(messages)-1]
 	userContent := genai.NewContentFromText(lastMsg.Content, genai.RoleUser)
 
-	// Persist user message
+	// Persist user message (no coordinator turn on this legacy path → random id)
 	if saver != nil {
-		saver.SaveUserMessage(ctx, threadID, userID, lastMsg.Content)
+		saver.SaveUserMessage(ctx, threadID, userID, lastMsg.Content, -1)
 	}
 
 	streamEvents(ctx, enc, core, threadID, requestID, userContent, saver, logger)
@@ -130,7 +131,7 @@ func StreamResumeRunFormat(ctx context.Context, w http.ResponseWriter, format st
 	setStreamHeaders(w, format)
 
 	requestID := fmt.Sprintf("chatcmpl-resume-%s", uuid.New().String()[:12])
-	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID)
+	enc := newEncoder(format, stream.NewSSESink(w), requestID, core, threadID, -1)
 
 	action := "denied"
 	if approved {

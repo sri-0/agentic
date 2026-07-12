@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"agentic/pkg/db/opensearch"
@@ -21,9 +22,19 @@ func NewMessageSaver(client *opensearch.Client, logger zerolog.Logger) *MessageS
 	return &MessageSaver{client: client, logger: logger}
 }
 
-func (s *MessageSaver) SaveUserMessage(ctx context.Context, threadID, userID, content string) {
+// SaveUserMessage persists a user turn. turn is the 0-based turn index the
+// coordinator derived for this run (eventlog.NextTurn): when >= 0 the doc is
+// keyed deterministically as {threadID}:{turn}:user — the same scheme the
+// archiver uses for assistant messages — so a re-send upserts in place and the
+// reloaded history id matches the live turn identity. A negative turn (legacy
+// non-coordinated paths) falls back to a random doc id.
+func (s *MessageSaver) SaveUserMessage(ctx context.Context, threadID, userID, content string, turn int) {
 	if s.client == nil {
 		return
+	}
+	docID := uuid.New().String()
+	if turn >= 0 {
+		docID = fmt.Sprintf("%s:%d:user", threadID, turn)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	doc := map[string]any{
@@ -60,7 +71,7 @@ func (s *MessageSaver) SaveUserMessage(ctx context.Context, threadID, userID, co
 				"updated_at": now,
 			})
 		}
-		if _, err := s.client.IndexDocument(bgCtx, opensearch.IndexMessages, uuid.New().String(), doc); err != nil {
+		if _, err := s.client.IndexDocument(bgCtx, opensearch.IndexMessages, docID, doc); err != nil {
 			s.logger.Warn().Err(err).Str("thread_id", threadID).Msg("failed to save user message")
 		}
 	}()

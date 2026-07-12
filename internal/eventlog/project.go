@@ -92,6 +92,22 @@ func ProjectMessages(events []AgentEvent) []ProjectedMessage {
 	return p.messages
 }
 
+// NextTurn returns the Turn index the next assistant message flushed from this
+// event sequence will receive. It folds the events through the SAME projector
+// ProjectMessages uses — the single source of truth for turn numbering — but
+// WITHOUT the trailing flush: a log whose last run is still open (mid-run /
+// awaiting-input) has not materialised that message yet, so NextTurn reports
+// the OPEN message's turn and a resumed continuation keeps the same identity.
+// This is what lets the live encoder stamp {session}:{turn}:assistant on the
+// start frame and have it match the archiver's deterministic doc id exactly.
+func NextTurn(events []AgentEvent) int {
+	p := &projector{taskParts: map[string]int{}}
+	for _, ev := range events {
+		p.fold(ev)
+	}
+	return p.turn
+}
+
 type projector struct {
 	messages []ProjectedMessage
 

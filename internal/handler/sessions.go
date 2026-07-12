@@ -65,7 +65,7 @@ func SessionStream(coord *agent.Coordinator, logger zerolog.Logger) http.Handler
 			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 			return
 		}
-		agent.StreamSessionAttach(r.Context(), w, format, coord, sessionID, "", h.AgentID, afterSeq, logger)
+		agent.StreamSessionAttach(r.Context(), w, format, coord, sessionID, "", h.AgentID, afterSeq, h.Turn, logger)
 	}
 }
 
